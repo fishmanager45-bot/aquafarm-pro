@@ -1,9 +1,16 @@
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy.orm import Session
-
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from app import models, schemas
 from app.database import Base, engine, get_db
-from app.core.security import create_access_token, hash_password, verify_password
+from app.core.security import (
+    ALGORITHM,
+    SECRET_KEY,
+    create_access_token,
+    hash_password,
+    verify_password,
+)
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -12,6 +19,53 @@ app = FastAPI(
 )
 
 
+bearer_scheme = HTTPBearer()
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+    db: Session = Depends(get_db),
+):
+    token = credentials.credentials
+
+    credentials_error = HTTPException(
+        status_code=401,
+        detail="Giriş məlumatı etibarsızdır",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+    try:
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+        )
+        user_id = payload.get("sub")
+
+        if user_id is None:
+            raise credentials_error
+
+        user_id = int(user_id)
+
+    except (JWTError, ValueError):
+        raise credentials_error
+
+    user = (
+        db.query(models.User)
+        .filter(models.User.id == user_id)
+        .first()
+    )
+
+    if user is None:
+        raise credentials_error
+
+    if user.status != "Aktiv":
+        raise HTTPException(
+            status_code=403,
+            detail="İstifadəçi aktiv deyil",
+        )
+
+    return user
 @app.get("/")
 def home():
     return {
@@ -21,7 +75,11 @@ def home():
     }
 
 
-@app.post("/ponds", response_model=schemas.PondResponse)
+@app.post(
+    "/ponds",
+    response_model=schemas.PondResponse,
+    dependencies=[Depends(get_current_user)],
+)
 def create_pond(
     pond: schemas.PondCreate,
     db: Session = Depends(get_db),
@@ -47,10 +105,18 @@ def create_pond(
     return new_pond
 
 
-@app.get("/ponds", response_model=list[schemas.PondResponse])
+@app.get(
+    "/ponds",
+    response_model=list[schemas.PondResponse],
+    dependencies=[Depends(get_current_user)],
+)
 def list_ponds(db: Session = Depends(get_db)):
     return db.query(models.Pond).order_by(models.Pond.id).all()
-@app.get("/ponds/{pond_id}", response_model=schemas.PondResponse)
+@app.get(
+    "/ponds/{pond_id}",
+    response_model=schemas.PondResponse,
+    dependencies=[Depends(get_current_user)],
+)
 def get_pond(
     pond_id: int,
     db: Session = Depends(get_db),
@@ -63,7 +129,11 @@ def get_pond(
     return pond
 
 
-@app.put("/ponds/{pond_id}", response_model=schemas.PondResponse)
+@app.put(
+    "/ponds/{pond_id}",
+    response_model=schemas.PondResponse,
+    dependencies=[Depends(get_current_user)],
+)
 def update_pond(
     pond_id: int,
     pond_data: schemas.PondUpdate,
