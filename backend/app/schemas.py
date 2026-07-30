@@ -28,3 +28,29 @@ class PondUpdate(BaseModel):
     oxygen: float | None = None
     daily_feed_kg: float | None = None
     status: str | None = None
+class UserCreate(BaseModel):
+    full_name: str
+    email: str
+    password: str
+    role: str = "operator"
+
+
+class UserResponse(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    role: str
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
