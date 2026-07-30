@@ -1,4 +1,4 @@
-from datetime import datetime
+﻿from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict
 
@@ -54,3 +54,33 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+class FishBatchCreate(BaseModel):
+    batch_code: str
+    pond_id: int
+    species: str
+    fish_count: int
+    average_weight_g: float
+    status: str = "Aktiv"
+
+
+class FishBatchUpdate(BaseModel):
+    batch_code: str | None = None
+    pond_id: int | None = None
+    species: str | None = None
+    fish_count: int | None = None
+    average_weight_g: float | None = None
+    status: str | None = None
+
+
+class FishBatchResponse(BaseModel):
+    id: int
+    batch_code: str
+    pond_id: int
+    species: str
+    fish_count: int
+    average_weight_g: float
+    biomass_kg: float
+    status: str
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)

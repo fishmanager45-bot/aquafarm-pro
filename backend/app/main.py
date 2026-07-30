@@ -241,3 +241,58 @@ def login_user(
         "access_token": access_token,
         "token_type": "bearer",
     }
+
+
+@app.post(
+    "/fish-batches",
+    response_model=schemas.FishBatchResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def create_fish_batch(
+    batch: schemas.FishBatchCreate,
+    db: Session = Depends(get_db),
+):
+    pond = (
+        db.query(models.Pond)
+        .filter(models.Pond.id == batch.pond_id)
+        .first()
+    )
+
+    if pond is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hovuz tapılmadı",
+        )
+
+    existing_batch = (
+        db.query(models.FishBatch)
+        .filter(models.FishBatch.batch_code == batch.batch_code)
+        .first()
+    )
+
+    if existing_batch:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu kodla balıq partiyası artıq mövcuddur",
+        )
+
+    new_batch = models.FishBatch(**batch.model_dump())
+
+    db.add(new_batch)
+    db.commit()
+    db.refresh(new_batch)
+
+    return new_batch
+@app.get(
+    "/fish-batches",
+    response_model=list[schemas.FishBatchResponse],
+    dependencies=[Depends(get_current_user)],
+)
+def list_fish_batches(
+    db: Session = Depends(get_db),
+):
+    return (
+        db.query(models.FishBatch)
+        .order_by(models.FishBatch.id)
+        .all()
+    )
