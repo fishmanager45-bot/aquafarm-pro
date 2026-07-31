@@ -5,6 +5,8 @@ from pydantic import BaseModel, ConfigDict
 
 class PondCreate(BaseModel):
     name: str
+    unit_type: str = "Hovuz"
+    area_m2: float = 0
     species: str | None = None
     fish_count: int = 0
     average_weight_g: float = 0
@@ -21,6 +23,8 @@ class PondResponse(PondCreate):
     model_config = ConfigDict(from_attributes=True)
 class PondUpdate(BaseModel):
     name: str | None = None
+    unit_type: str | None = None
+    area_m2: float | None = None
     species: str | None = None
     fish_count: int | None = None
     average_weight_g: float | None = None

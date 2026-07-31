@@ -517,3 +517,23 @@ td {
   background: #07889b;
   color: white;
 }
+.table-section {
+  overflow-x: auto;
+}
+
+.table-section table {
+  min-width: 1250px;
+}
+
+.table-section th,
+.table-section td {
+  white-space: nowrap;
+}
+
+.table-section td:first-child {
+  min-width: 90px;
+}
+
+.edit-button {
+  white-space: nowrap;
+}
