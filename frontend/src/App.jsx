@@ -10,6 +10,17 @@ function App() {
   const [ponds, setPonds] = useState([]);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [showPondForm, setShowPondForm] = useState(false);
+const [savingPond, setSavingPond] = useState(false);
+const [editingPondId, setEditingPondId] = useState(null);
+const [newPond, setNewPond] = useState({
+  name: "",
+  species: "",
+  fish_count: "",
+  average_weight_g: "",
+  daily_feed_kg: "",
+  status: "Aktiv",
+});
 
   const loadPonds = async (accessToken) => {
     try {
@@ -40,7 +51,71 @@ function App() {
       loadPonds(token);
     }
   }, [token]);
+const openEditPond = (pond) => {
+  setEditingPondId(pond.id);
 
+  setNewPond({
+    name: pond.name || "",
+    species: pond.species || "",
+    fish_count: pond.fish_count ?? "",
+    average_weight_g: pond.average_weight_g ?? "",
+    daily_feed_kg: pond.daily_feed_kg ?? "",
+    status: pond.status || "Aktiv",
+  });
+
+  setError("");
+  setShowPondForm(true);
+};
+  const createPond = async (event) => {
+  event.preventDefault();
+  setSavingPond(true);
+  setError("");
+
+  try {
+    const url = editingPondId
+  ? `${API_URL}/ponds/${editingPondId}`
+  : `${API_URL}/ponds`;
+
+const response = await fetch(url, {
+  method: editingPondId ? "PUT" : "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        name: newPond.name,
+        species: newPond.species || null,
+        fish_count: Number(newPond.fish_count || 0),
+        average_weight_g: Number(newPond.average_weight_g || 0),
+        daily_feed_kg: Number(newPond.daily_feed_kg || 0),
+        status: newPond.status,
+      }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json();
+      throw new Error(data.detail || "Hovuz əlavə edilmədi");
+    }
+
+    await loadPonds(token);
+
+    setNewPond({
+      name: "",
+      species: "",
+      fish_count: "",
+      average_weight_g: "",
+      daily_feed_kg: "",
+      status: "Aktiv",
+    });
+
+    setEditingPondId(null);
+    setShowPondForm(false);
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    setSavingPond(false);
+  }
+};
   const login = async (event) => {
     event.preventDefault();
     setLoading(true);
@@ -160,9 +235,153 @@ function App() {
             <h1>İdarəetmə paneli</h1>
             <p>Təsərrüfatın real vaxt üzrə ümumi vəziyyəti</p>
           </div>
-          <button className="add-button">+ Yeni hovuz</button>
+       <button
+  className="add-button"
+  onClick={() => {
+  setEditingPondId(null);
+  setNewPond({
+    name: "",
+    species: "",
+    fish_count: "",
+    average_weight_g: "",
+    daily_feed_kg: "",
+    status: "Aktiv",
+  });
+  setError("");
+  setShowPondForm(true);
+}}
+>
+  + Yeni hovuz
+</button>
         </header>
+{showPondForm && (
+  <div className="modal-overlay">
+    <form className="pond-form" onSubmit={createPond}>
+      <div className="form-header">
+        <div>
+          <h2>{editingPondId ? "Hovuzu redaktə et" : "Yeni hovuz əlavə et"}</h2>
+          <p>Hovuzun ilkin məlumatlarını daxil edin</p>
+        </div>
 
+        <button
+          type="button"
+          className="close-button"
+          onClick={() => setShowPondForm(false)}
+        >
+          ×
+        </button>
+      </div>
+
+      <div className="form-grid">
+        <div className="form-field">
+          <label>Hovuzun adı *</label>
+          <input
+            value={newPond.name}
+            onChange={(event) =>
+              setNewPond({ ...newPond, name: event.target.value })
+            }
+            placeholder="Məsələn: Hovuz 2"
+            required
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Balıq növü</label>
+          <input
+            value={newPond.species}
+            onChange={(event) =>
+              setNewPond({ ...newPond, species: event.target.value })
+            }
+            placeholder="Məsələn: Rus nərəsi"
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Balıq sayı</label>
+          <input
+            type="number"
+            min="0"
+            value={newPond.fish_count}
+            onChange={(event) =>
+              setNewPond({ ...newPond, fish_count: event.target.value })
+            }
+            placeholder="0"
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Orta çəki (qram)</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={newPond.average_weight_g}
+            onChange={(event) =>
+              setNewPond({
+                ...newPond,
+                average_weight_g: event.target.value,
+              })
+            }
+            placeholder="0"
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Gündəlik yem (kq)</label>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={newPond.daily_feed_kg}
+            onChange={(event) =>
+              setNewPond({
+                ...newPond,
+                daily_feed_kg: event.target.value,
+              })
+            }
+            placeholder="0"
+          />
+        </div>
+
+        <div className="form-field">
+          <label>Status</label>
+          <select
+            value={newPond.status}
+            onChange={(event) =>
+              setNewPond({ ...newPond, status: event.target.value })
+            }
+          >
+            <option value="Aktiv">Aktiv</option>
+            <option value="Boş">Boş</option>
+            <option value="Təmirdə">Təmirdə</option>
+          </select>
+        </div>
+      </div>
+
+      <div className="form-actions">
+        <button
+          type="button"
+          className="cancel-button"
+          onClick={() => setShowPondForm(false)}
+        >
+          Ləğv et
+        </button>
+
+        <button
+          type="submit"
+          className="save-button"
+          disabled={savingPond}
+        >
+          {savingPond
+  ? "Yadda saxlanılır..."
+  : editingPondId
+    ? "Dəyişiklikləri yadda saxla"
+    : "Hovuzu yadda saxla"}
+        </button>
+      </div>
+    </form>
+  </div>
+)}
         {error && <div className="dashboard-error">{error}</div>}
 
         <section className="cards">
@@ -216,6 +435,7 @@ function App() {
                 <th>Orta çəki</th>
                 <th>Biokütlə</th>
                 <th>Status</th>
+                <th>Əməliyyat</th>
               </tr>
             </thead>
 
@@ -234,13 +454,21 @@ function App() {
                     <td>{Number(pond.average_weight_g || 0)} q</td>
                     <td>{biomass.toFixed(1)} kq</td>
                     <td><span className="status">{pond.status}</span></td>
+                    <td>
+  <button
+    className="edit-button"
+    onClick={() => openEditPond(pond)}
+  >
+    Redaktə et
+  </button>
+</td>
                   </tr>
                 );
               })}
 
               {ponds.length === 0 && (
                 <tr>
-                  <td colSpan="6" className="empty-row">
+                  <td colSpan="7" className="empty-row">
                     Hovuz məlumatı yoxdur
                   </td>
                 </tr>
