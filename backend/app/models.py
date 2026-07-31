@@ -1,6 +1,6 @@
-from datetime import datetime
+from datetime import date, datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String
+from sqlalchemy import Date, DateTime, Float, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -133,5 +133,66 @@ class FishBatch(Base):
     def biomass_kg(self) -> float:
         return round(
             self.fish_count * self.average_weight_g / 1000,
+            3,
+        )
+
+
+class MortalityRecord(Base):
+    __tablename__ = "mortality_records"
+
+    id: Mapped[int] = mapped_column(
+        primary_key=True,
+        index=True,
+    )
+    pond_id: Mapped[int] = mapped_column(
+        ForeignKey("ponds.id"),
+        index=True,
+        nullable=False,
+    )
+    record_date: Mapped[date] = mapped_column(
+        Date,
+        default=date.today,
+        index=True,
+        nullable=False,
+    )
+    dead_count: Mapped[int] = mapped_column(
+        Integer,
+        default=0,
+        nullable=False,
+    )
+    average_weight_g: Mapped[float] = mapped_column(
+        Float,
+        default=0,
+        nullable=False,
+    )
+    species: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+    )
+    birth_year: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    sex: Mapped[str | None] = mapped_column(
+        String(20),
+        nullable=True,
+    )
+    reason: Mapped[str | None] = mapped_column(
+        String(200),
+        nullable=True,
+    )
+    notes: Mapped[str | None] = mapped_column(
+        String(500),
+        nullable=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.now,
+    )
+
+    @property
+    def mortality_biomass_kg(self) -> float:
+        return round(
+            self.dead_count * self.average_weight_g / 1000,
             3,
         )

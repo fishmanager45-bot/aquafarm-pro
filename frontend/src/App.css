@@ -537,3 +537,133 @@ td {
 .edit-button {
   white-space: nowrap;
 }
+/* Ölüm səhifəsi */
+
+.mortality-form-section {
+  margin-bottom: 28px;
+  overflow: visible;
+}
+
+.mortality-form {
+  background: white;
+}
+
+.mortality-form .form-grid {
+  padding-top: 22px;
+  padding-bottom: 22px;
+}
+
+.form-field textarea {
+  width: 100%;
+  min-height: 90px;
+  padding: 12px 13px;
+  resize: vertical;
+  border: 1px solid #d5dee6;
+  border-radius: 9px;
+  background: white;
+  color: #172033;
+  outline: none;
+  font-family: inherit;
+  font-size: 14px;
+}
+
+.form-field textarea:focus {
+  border-color: #07889b;
+  box-shadow: 0 0 0 3px rgba(7, 136, 155, 0.12);
+}
+
+.form-field input:disabled {
+  background: #f1f5f7;
+  color: #536270;
+  cursor: not-allowed;
+}
+
+.mortality-notes {
+  grid-column: 1 / -1;
+}
+
+.mortality-cards {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.table-section + .table-section {
+  margin-top: 28px;
+}
+
+.summary-section table {
+  min-width: 600px;
+}
+
+.summary-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.summary-heading select {
+  min-width: 150px;
+  padding: 10px 13px;
+  border: 1px solid #d5dee6;
+  border-radius: 9px;
+  background: white;
+  color: #172033;
+  outline: none;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.summary-heading select:focus {
+  border-color: #07889b;
+  box-shadow: 0 0 0 3px rgba(7, 136, 155, 0.12);
+}
+
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.delete-button {
+  padding: 7px 12px;
+  border: 1px solid #f2b8b5;
+  border-radius: 7px;
+  background: #fff0ef;
+  color: #b42318;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.delete-button:hover {
+  border-color: #d92d20;
+  background: #d92d20;
+  color: white;
+}
+
+@media (max-width: 1000px) {
+  .mortality-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 700px) {
+  .mortality-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .mortality-notes {
+    grid-column: auto;
+  }
+
+  .summary-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .summary-heading select {
+    width: 100%;
+  }
+}

@@ -1,4 +1,6 @@
+from datetime import date
 from fastapi import Depends, FastAPI, HTTPException
+from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -303,3 +305,251 @@ def list_fish_batches(
         .order_by(models.FishBatch.id)
         .all()
     )
+
+@app.post(
+    "/mortality",
+    response_model=schemas.MortalityResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def create_mortality_record(
+    mortality: schemas.MortalityCreate,
+    db: Session = Depends(get_db),
+):
+    pond = (
+        db.query(models.Pond)
+        .filter(models.Pond.id == mortality.pond_id)
+        .first()
+    )
+
+    if pond is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hovuz tapılmadı",
+        )
+
+    new_record = models.MortalityRecord(
+        **mortality.model_dump()
+    )
+
+    db.add(new_record)
+    db.commit()
+    db.refresh(new_record)
+
+    return new_record
+
+
+@app.get(
+    "/mortality",
+    response_model=list[schemas.MortalityResponse],
+    dependencies=[Depends(get_current_user)],
+)
+def list_mortality_records(
+    pond_id: int | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.MortalityRecord)
+
+    if pond_id is not None:
+        query = query.filter(
+            models.MortalityRecord.pond_id == pond_id
+        )
+
+    if start_date is not None:
+        query = query.filter(
+            models.MortalityRecord.record_date >= start_date
+        )
+
+    if end_date is not None:
+        query = query.filter(
+            models.MortalityRecord.record_date <= end_date
+        )
+
+    return (
+        query
+        .order_by(
+            models.MortalityRecord.record_date.desc(),
+            models.MortalityRecord.id.desc(),
+        )
+        .all()
+    )
+
+
+@app.get(
+    "/mortality/summary",
+    response_model=list[schemas.MortalitySummary],
+    dependencies=[Depends(get_current_user)],
+)
+def mortality_summary(
+    period: str = "daily",
+    year: int | None = None,
+    month: int | None = None,
+    pond_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    period_map = {
+        "daily": "day",
+        "monthly": "month",
+        "yearly": "year",
+    }
+
+    if period not in period_map:
+        raise HTTPException(
+            status_code=400,
+            detail="Period daily, monthly və ya yearly olmalıdır",
+        )
+
+    period_column = func.date_trunc(
+        period_map[period],
+        models.MortalityRecord.record_date,
+    ).label("period")
+
+    total_dead = func.coalesce(
+        func.sum(models.MortalityRecord.dead_count),
+        0,
+    ).label("total_dead_count")
+
+    total_biomass = func.coalesce(
+        func.sum(
+            models.MortalityRecord.dead_count
+            * models.MortalityRecord.average_weight_g
+            / 1000
+        ),
+        0,
+    ).label("total_biomass_kg")
+
+    query = db.query(
+        period_column,
+        total_dead,
+        total_biomass,
+    )
+
+    if year is not None:
+        query = query.filter(
+            extract(
+                "year",
+                models.MortalityRecord.record_date,
+            ) == year
+        )
+
+    if month is not None:
+        query = query.filter(
+            extract(
+                "month",
+                models.MortalityRecord.record_date,
+            ) == month
+        )
+
+    if pond_id is not None:
+        query = query.filter(
+            models.MortalityRecord.pond_id == pond_id
+        )
+
+    rows = (
+        query
+        .group_by(period_column)
+        .order_by(period_column)
+        .all()
+    )
+
+    results = []
+
+    for row in rows:
+        if period == "daily":
+            period_text = row.period.strftime("%Y-%m-%d")
+        elif period == "monthly":
+            period_text = row.period.strftime("%Y-%m")
+        else:
+            period_text = row.period.strftime("%Y")
+
+        results.append(
+            {
+                "period": period_text,
+                "total_dead_count": int(
+                    row.total_dead_count or 0
+                ),
+                "total_biomass_kg": round(
+                    float(row.total_biomass_kg or 0),
+                    3,
+                ),
+            }
+        )
+
+    return results
+
+
+@app.put(
+    "/mortality/{record_id}",
+    response_model=schemas.MortalityResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def update_mortality_record(
+    record_id: int,
+    mortality_data: schemas.MortalityUpdate,
+    db: Session = Depends(get_db),
+):
+    record = (
+        db.query(models.MortalityRecord)
+        .filter(models.MortalityRecord.id == record_id)
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ölüm qeydi tapılmadı",
+        )
+
+    updates = mortality_data.model_dump(
+        exclude_unset=True
+    )
+
+    if "pond_id" in updates:
+        pond = (
+            db.query(models.Pond)
+            .filter(models.Pond.id == updates["pond_id"])
+            .first()
+        )
+
+        if pond is None:
+            raise HTTPException(
+                status_code=404,
+                detail="Hovuz tapılmadı",
+            )
+
+    for field, value in updates.items():
+        setattr(record, field, value)
+
+    db.commit()
+    db.refresh(record)
+
+    return record
+
+
+@app.delete(
+    "/mortality/{record_id}",
+    dependencies=[Depends(get_current_user)],
+)
+def delete_mortality_record(
+    record_id: int,
+    db: Session = Depends(get_db),
+):
+    record = (
+        db.query(models.MortalityRecord)
+        .filter(models.MortalityRecord.id == record_id)
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ölüm qeydi tapılmadı",
+        )
+
+    db.delete(record)
+    db.commit()
+
+    return {
+        "message": "Ölüm qeydi uğurla silindi"
+    }

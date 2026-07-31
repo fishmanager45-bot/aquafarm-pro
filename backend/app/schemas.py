@@ -1,6 +1,6 @@
-﻿from datetime import datetime
+﻿from datetime import date, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PondCreate(BaseModel):
@@ -21,6 +21,8 @@ class PondResponse(PondCreate):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
 class PondUpdate(BaseModel):
     name: str | None = None
     unit_type: str | None = None
@@ -32,6 +34,8 @@ class PondUpdate(BaseModel):
     oxygen: float | None = None
     daily_feed_kg: float | None = None
     status: str | None = None
+
+
 class UserCreate(BaseModel):
     full_name: str
     email: str
@@ -58,6 +62,8 @@ class LoginRequest(BaseModel):
 class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
 class FishBatchCreate(BaseModel):
     batch_code: str
     pond_id: int
@@ -88,3 +94,58 @@ class FishBatchResponse(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class MortalityCreate(BaseModel):
+    pond_id: int
+    record_date: date = Field(default_factory=date.today)
+    dead_count: int = Field(ge=1)
+    average_weight_g: float = Field(default=0, ge=0)
+    species: str | None = None
+    birth_year: int | None = Field(
+        default=None,
+        ge=1900,
+        le=date.today().year,
+    )
+    sex: str | None = None
+    reason: str | None = None
+    notes: str | None = None
+
+
+class MortalityUpdate(BaseModel):
+    pond_id: int | None = None
+    record_date: date | None = None
+    dead_count: int | None = Field(default=None, ge=1)
+    average_weight_g: float | None = Field(default=None, ge=0)
+    species: str | None = None
+    birth_year: int | None = Field(
+        default=None,
+        ge=1900,
+        le=date.today().year,
+    )
+    sex: str | None = None
+    reason: str | None = None
+    notes: str | None = None
+
+
+class MortalityResponse(BaseModel):
+    id: int
+    pond_id: int
+    record_date: date
+    dead_count: int
+    average_weight_g: float
+    species: str | None
+    birth_year: int | None
+    sex: str | None
+    mortality_biomass_kg: float
+    reason: str | None
+    notes: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class MortalitySummary(BaseModel):
+    period: str
+    total_dead_count: int
+    total_biomass_kg: float
