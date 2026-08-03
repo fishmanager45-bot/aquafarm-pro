@@ -1,3 +1,4 @@
+import os
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
@@ -35,14 +36,21 @@ app = FastAPI(
     title="AquaFarm Pro",
     version="1.0.0",
 )
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+frontend_url = os.getenv("FRONTEND_URL", "").rstrip("/")
+
+allowed_origins = [
     "http://localhost:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:5174",
-],
+]
+
+if frontend_url:
+    allowed_origins.append(frontend_url)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1371,3 +1379,182 @@ async def upload_drug_document(transaction_id: int, photo: UploadFile = File(...
     transaction.document_path = f"/uploads/drug_invoices/{filename}"
     db.commit(); db.refresh(transaction)
     return transaction
+
+# ==================== COLD STORAGE ====================
+@app.get("/cold-storage", response_model=list[schemas.ColdStorageResponse], dependencies=[Depends(get_current_user)])
+def list_cold_storage(db: Session = Depends(get_db)):
+    return db.query(models.ColdStorageBatch).order_by(models.ColdStorageBatch.received_date.desc(), models.ColdStorageBatch.id.desc()).all()
+
+@app.post("/cold-storage", response_model=schemas.ColdStorageResponse, dependencies=[Depends(get_current_user)])
+def create_cold_storage(payload: schemas.ColdStorageCreate, db: Session = Depends(get_db)):
+    data=payload.model_dump(); count=data.pop("fish_count"); weight=data.pop("weight_kg")
+    batch=models.ColdStorageBatch(**data, initial_fish_count=count, current_fish_count=count, initial_weight_kg=weight, current_weight_kg=weight)
+    db.add(batch); db.commit(); db.refresh(batch); return batch
+
+@app.put("/cold-storage/{batch_id}", response_model=schemas.ColdStorageResponse, dependencies=[Depends(get_current_user)])
+def update_cold_storage(batch_id:int,payload:schemas.ColdStorageUpdate,db:Session=Depends(get_db)):
+    batch=db.query(models.ColdStorageBatch).filter(models.ColdStorageBatch.id==batch_id).first()
+    if batch is None: raise HTTPException(status_code=404,detail="Soyuducu partiyası tapılmadı")
+    for k,v in payload.model_dump(exclude_unset=True).items(): setattr(batch,k,v)
+    db.commit(); db.refresh(batch); return batch
+
+@app.delete("/cold-storage/{batch_id}", dependencies=[Depends(get_current_user)])
+def delete_cold_storage(batch_id:int,db:Session=Depends(get_db)):
+    batch=db.query(models.ColdStorageBatch).filter(models.ColdStorageBatch.id==batch_id).first()
+    if batch is None: raise HTTPException(status_code=404,detail="Soyuducu partiyası tapılmadı")
+    if batch.current_fish_count!=batch.initial_fish_count or abs(batch.current_weight_kg-batch.initial_weight_kg)>0.0001:
+        raise HTTPException(status_code=400,detail="Bu partiyadan satış edilib; partiyanı silmək olmaz")
+    db.delete(batch); db.commit(); return {"message":"Soyuducu partiyası silindi"}
+
+def _restore_sale_stock(sale,db):
+    if not sale.stock_deducted:return
+    if sale.source_type=="Soyuducu" and sale.cold_storage_batch_id:
+        b=db.query(models.ColdStorageBatch).filter(models.ColdStorageBatch.id==sale.cold_storage_batch_id).with_for_update().first()
+        if b: b.current_fish_count+=sale.fish_count; b.current_weight_kg+=sale.total_weight_kg
+    elif sale.pond_id:
+        p=db.query(models.Pond).filter(models.Pond.id==sale.pond_id).with_for_update().first()
+        if p:p.fish_count+=sale.fish_count
+
+def _deduct_sale_stock(source_type,pond_id,cold_id,count,weight,db):
+    if source_type=="Soyuducu":
+        b=db.query(models.ColdStorageBatch).filter(models.ColdStorageBatch.id==cold_id).with_for_update().first()
+        if b is None:raise HTTPException(status_code=404,detail="Soyuducu partiyası tapılmadı")
+        if b.current_fish_count<count or b.current_weight_kg+0.0001<weight:raise HTTPException(status_code=400,detail=f"Soyuducuda yalnız {b.current_fish_count} ədəd / {b.current_weight_kg:.3f} kq qalıb")
+        b.current_fish_count-=count;b.current_weight_kg-=weight
+    else:
+        p=db.query(models.Pond).filter(models.Pond.id==pond_id).with_for_update().first()
+        if p is None:raise HTTPException(status_code=404,detail="Hovuz tapılmadı")
+        if p.fish_count<count:raise HTTPException(status_code=400,detail=f"Hovuzda yalnız {p.fish_count} balıq var")
+        p.fish_count-=count
+
+# ==================== SALES ====================
+@app.get("/sales",response_model=list[schemas.SaleResponse],dependencies=[Depends(get_current_user)])
+def list_sales(db:Session=Depends(get_db)):
+    return db.query(models.SaleRecord).order_by(models.SaleRecord.sale_date.desc(),models.SaleRecord.id.desc()).all()
+
+@app.post("/sales",response_model=schemas.SaleResponse,dependencies=[Depends(get_current_user)])
+def create_sale(payload:schemas.SaleCreate,db:Session=Depends(get_db)):
+    _deduct_sale_stock(payload.source_type,payload.pond_id,payload.cold_storage_batch_id,payload.fish_count,payload.total_weight_kg,db)
+    sale=models.SaleRecord(**payload.model_dump(),total_amount=round(payload.total_weight_kg*payload.price_per_kg,2),stock_deducted=True)
+    db.add(sale);db.commit();db.refresh(sale);return sale
+
+@app.put("/sales/{sale_id}",response_model=schemas.SaleResponse,dependencies=[Depends(get_current_user)])
+def update_sale(sale_id:int,payload:schemas.SaleUpdate,db:Session=Depends(get_db)):
+    sale=db.query(models.SaleRecord).filter(models.SaleRecord.id==sale_id).with_for_update().first()
+    if sale is None:raise HTTPException(status_code=404,detail="Satış tapılmadı")
+    data=payload.model_dump(exclude_unset=True);_restore_sale_stock(sale,db)
+    source=data.get("source_type",sale.source_type);pond=data.get("pond_id",sale.pond_id);cold=data.get("cold_storage_batch_id",sale.cold_storage_batch_id);count=data.get("fish_count",sale.fish_count);weight=data.get("total_weight_kg",sale.total_weight_kg)
+    _deduct_sale_stock(source,pond,cold,count,weight,db)
+    for k,v in data.items():setattr(sale,k,v)
+    sale.total_amount=round(sale.total_weight_kg*sale.price_per_kg,2);db.commit();db.refresh(sale);return sale
+
+@app.delete("/sales/{sale_id}",dependencies=[Depends(get_current_user)])
+def delete_sale(sale_id:int,db:Session=Depends(get_db)):
+    sale=db.query(models.SaleRecord).filter(models.SaleRecord.id==sale_id).with_for_update().first()
+    if sale is None:raise HTTPException(status_code=404,detail="Satış tapılmadı")
+    _restore_sale_stock(sale,db)
+    if sale.document_path:(UPLOAD_ROOT/"sales_invoices"/Path(sale.document_path).name).unlink(missing_ok=True)
+    db.delete(sale);db.commit();return {"message":"Satış silindi və stok geri qaytarıldı"}
+
+@app.post("/sales/{sale_id}/document",response_model=schemas.SaleResponse,dependencies=[Depends(get_current_user)])
+async def upload_sale_document(sale_id:int,photo:UploadFile=File(...),db:Session=Depends(get_db)):
+    sale=db.query(models.SaleRecord).filter(models.SaleRecord.id==sale_id).first()
+    if sale is None:raise HTTPException(status_code=404,detail="Satış tapılmadı")
+    ext=PHOTO_EXTENSIONS.get(photo.content_type)
+    if ext is None:raise HTTPException(status_code=400,detail="Yalnız JPG, PNG və WEBP qəbul edilir")
+    content=await photo.read()
+    if len(content)>MAX_PHOTO_SIZE:raise HTTPException(status_code=400,detail="Şəkil maksimum 10 MB ola bilər")
+    directory=UPLOAD_ROOT/"sales_invoices";directory.mkdir(parents=True,exist_ok=True);filename=f"{uuid4().hex}{ext}";(directory/filename).write_bytes(content)
+    if sale.document_path:(directory/Path(sale.document_path).name).unlink(missing_ok=True)
+    sale.document_path=f"/uploads/sales_invoices/{filename}";db.commit();db.refresh(sale);return sale
+
+# ==================== PERSONNEL ====================
+@app.get("/employees",response_model=list[schemas.EmployeeResponse],dependencies=[Depends(get_current_user)])
+def list_employees(db:Session=Depends(get_db)):
+    return db.query(models.Employee).order_by(models.Employee.full_name).all()
+
+@app.post("/employees",response_model=schemas.EmployeeResponse,dependencies=[Depends(get_current_user)])
+def create_employee(payload:schemas.EmployeeCreate,db:Session=Depends(get_db)):
+    if db.query(models.Employee).filter(models.Employee.employee_code==payload.employee_code).first():raise HTTPException(status_code=400,detail="Bu işçi kodu artıq mövcuddur")
+    if payload.fin_code and db.query(models.Employee).filter(models.Employee.fin_code==payload.fin_code).first():raise HTTPException(status_code=400,detail="Bu FIN kodu artıq mövcuddur")
+    obj=models.Employee(**payload.model_dump());db.add(obj);db.commit();db.refresh(obj);return obj
+
+@app.put("/employees/{employee_id}",response_model=schemas.EmployeeResponse,dependencies=[Depends(get_current_user)])
+def update_employee(employee_id:int,payload:schemas.EmployeeUpdate,db:Session=Depends(get_db)):
+    obj=db.query(models.Employee).filter(models.Employee.id==employee_id).first()
+    if obj is None:raise HTTPException(status_code=404,detail="İşçi tapılmadı")
+    data=payload.model_dump(exclude_unset=True)
+    if "employee_code" in data and db.query(models.Employee).filter(models.Employee.employee_code==data["employee_code"],models.Employee.id!=employee_id).first():raise HTTPException(status_code=400,detail="Bu işçi kodu artıq mövcuddur")
+    if data.get("fin_code") and db.query(models.Employee).filter(models.Employee.fin_code==data["fin_code"],models.Employee.id!=employee_id).first():raise HTTPException(status_code=400,detail="Bu FIN kodu artıq mövcuddur")
+    for k,v in data.items():setattr(obj,k,v)
+    db.commit();db.refresh(obj);return obj
+
+@app.delete("/employees/{employee_id}",dependencies=[Depends(get_current_user)])
+def delete_employee(employee_id:int,db:Session=Depends(get_db)):
+    obj=db.query(models.Employee).filter(models.Employee.id==employee_id).first()
+    if obj is None:raise HTTPException(status_code=404,detail="İşçi tapılmadı")
+    db.query(models.AttendanceRecord).filter(models.AttendanceRecord.employee_id==employee_id).delete()
+    db.query(models.SalaryPayment).filter(models.SalaryPayment.employee_id==employee_id).delete()
+    docs=db.query(models.EmployeeDocument).filter(models.EmployeeDocument.employee_id==employee_id).all()
+    for d in docs:(UPLOAD_ROOT/"employees"/Path(d.document_path).name).unlink(missing_ok=True)
+    db.query(models.EmployeeDocument).filter(models.EmployeeDocument.employee_id==employee_id).delete()
+    if obj.photo_path:(UPLOAD_ROOT/"employees"/Path(obj.photo_path).name).unlink(missing_ok=True)
+    db.delete(obj);db.commit();return {"message":"İşçi silindi"}
+
+@app.post("/employees/{employee_id}/photo",response_model=schemas.EmployeeResponse,dependencies=[Depends(get_current_user)])
+async def upload_employee_photo(employee_id:int,photo:UploadFile=File(...),db:Session=Depends(get_db)):
+    obj=db.query(models.Employee).filter(models.Employee.id==employee_id).first()
+    if obj is None:raise HTTPException(status_code=404,detail="İşçi tapılmadı")
+    ext=PHOTO_EXTENSIONS.get(photo.content_type)
+    if ext is None:raise HTTPException(status_code=400,detail="Yalnız JPG, PNG və WEBP qəbul edilir")
+    content=await photo.read()
+    if len(content)>MAX_PHOTO_SIZE:raise HTTPException(status_code=400,detail="Şəkil maksimum 10 MB ola bilər")
+    directory=UPLOAD_ROOT/"employees";directory.mkdir(parents=True,exist_ok=True);name=f"{uuid4().hex}{ext}";(directory/name).write_bytes(content)
+    if obj.photo_path:(directory/Path(obj.photo_path).name).unlink(missing_ok=True)
+    obj.photo_path=f"/uploads/employees/{name}";db.commit();db.refresh(obj);return obj
+
+@app.get("/employees/{employee_id}/attendance",response_model=list[schemas.AttendanceResponse],dependencies=[Depends(get_current_user)])
+def list_attendance(employee_id:int,db:Session=Depends(get_db)):
+    return db.query(models.AttendanceRecord).filter(models.AttendanceRecord.employee_id==employee_id).order_by(models.AttendanceRecord.attendance_date.desc()).all()
+@app.post("/employees/{employee_id}/attendance",response_model=schemas.AttendanceResponse,dependencies=[Depends(get_current_user)])
+def create_attendance(employee_id:int,payload:schemas.AttendanceCreate,db:Session=Depends(get_db)):
+    old=db.query(models.AttendanceRecord).filter(models.AttendanceRecord.employee_id==employee_id,models.AttendanceRecord.attendance_date==payload.attendance_date).first()
+    if old:
+        for k,v in payload.model_dump().items():setattr(old,k,v)
+        db.commit();db.refresh(old);return old
+    obj=models.AttendanceRecord(employee_id=employee_id,**payload.model_dump());db.add(obj);db.commit();db.refresh(obj);return obj
+@app.delete("/attendance/{record_id}",dependencies=[Depends(get_current_user)])
+def delete_attendance(record_id:int,db:Session=Depends(get_db)):
+    obj=db.query(models.AttendanceRecord).filter(models.AttendanceRecord.id==record_id).first()
+    if obj is None:raise HTTPException(status_code=404,detail="Davamiyyət tapılmadı")
+    db.delete(obj);db.commit();return {"message":"Davamiyyət silindi"}
+
+@app.get("/employees/{employee_id}/salary-payments",response_model=list[schemas.SalaryPaymentResponse],dependencies=[Depends(get_current_user)])
+def list_salary(employee_id:int,db:Session=Depends(get_db)):
+    return db.query(models.SalaryPayment).filter(models.SalaryPayment.employee_id==employee_id).order_by(models.SalaryPayment.payment_date.desc()).all()
+@app.post("/employees/{employee_id}/salary-payments",response_model=schemas.SalaryPaymentResponse,dependencies=[Depends(get_current_user)])
+def create_salary(employee_id:int,payload:schemas.SalaryPaymentCreate,db:Session=Depends(get_db)):
+    obj=models.SalaryPayment(employee_id=employee_id,**payload.model_dump());db.add(obj);db.commit();db.refresh(obj);return obj
+@app.delete("/salary-payments/{payment_id}",dependencies=[Depends(get_current_user)])
+def delete_salary(payment_id:int,db:Session=Depends(get_db)):
+    obj=db.query(models.SalaryPayment).filter(models.SalaryPayment.id==payment_id).first()
+    if obj is None:raise HTTPException(status_code=404,detail="Maaş ödənişi tapılmadı")
+    db.delete(obj);db.commit();return {"message":"Ödəniş silindi"}
+
+@app.get("/employees/{employee_id}/documents",response_model=list[schemas.EmployeeDocumentResponse],dependencies=[Depends(get_current_user)])
+def list_employee_documents(employee_id:int,db:Session=Depends(get_db)):
+    return db.query(models.EmployeeDocument).filter(models.EmployeeDocument.employee_id==employee_id).order_by(models.EmployeeDocument.created_at.desc()).all()
+@app.post("/employees/{employee_id}/documents",response_model=schemas.EmployeeDocumentResponse,dependencies=[Depends(get_current_user)])
+async def upload_employee_document(employee_id:int,document_type:str,notes:str|None=None,file:UploadFile=File(...),db:Session=Depends(get_db)):
+    if not db.query(models.Employee).filter(models.Employee.id==employee_id).first():raise HTTPException(status_code=404,detail="İşçi tapılmadı")
+    allowed={"image/jpeg":".jpg","image/png":".png","image/webp":".webp","application/pdf":".pdf"};ext=allowed.get(file.content_type)
+    if ext is None:raise HTTPException(status_code=400,detail="Yalnız JPG, PNG, WEBP və PDF qəbul edilir")
+    content=await file.read()
+    if len(content)>15*1024*1024:raise HTTPException(status_code=400,detail="Sənəd maksimum 15 MB ola bilər")
+    directory=UPLOAD_ROOT/"employees";directory.mkdir(parents=True,exist_ok=True);name=f"{uuid4().hex}{ext}";(directory/name).write_bytes(content)
+    obj=models.EmployeeDocument(employee_id=employee_id,document_type=document_type,document_path=f"/uploads/employees/{name}",notes=notes);db.add(obj);db.commit();db.refresh(obj);return obj
+@app.delete("/employee-documents/{document_id}",dependencies=[Depends(get_current_user)])
+def delete_employee_document(document_id:int,db:Session=Depends(get_db)):
+    obj=db.query(models.EmployeeDocument).filter(models.EmployeeDocument.id==document_id).first()
+    if obj is None:raise HTTPException(status_code=404,detail="Sənəd tapılmadı")
+    (UPLOAD_ROOT/"employees"/Path(obj.document_path).name).unlink(missing_ok=True);db.delete(obj);db.commit();return {"message":"Sənəd silindi"}

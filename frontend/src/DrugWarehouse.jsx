@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000");
 const today = () => new Date(Date.now() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 10);
 const emptyProduct = () => ({ name:"", category:"Antibiotik", manufacturer:"", supplier:"", active_ingredient:"", concentration:"", unit:"ədəd", batch_number:"", manufacture_date:"", expiry_date:"", unit_price:"", minimum_stock:"", storage_condition:"", notes:"" });
 const emptyTransaction = () => ({ product_id:"", transaction_type:"Giriş", quantity:"", transaction_date:today(), unit_price:"", purpose:"", notes:"" });

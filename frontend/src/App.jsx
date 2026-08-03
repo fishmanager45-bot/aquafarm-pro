@@ -7,7 +7,7 @@ import Personnel from "./Personnel";
 
 // AquaFarm Pro ölüm modulu: növ, doğum ili, avtomatik yaş və cins.
 
-const API_URL = "http://127.0.0.1:8000";
+const API_URL = (import.meta.env.VITE_API_URL || "http://127.0.0.1:8000");
 
 const getToday = () => {
   const now = new Date();
