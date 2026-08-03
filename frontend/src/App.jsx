@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import "./App.css";
 import DrugWarehouse from "./DrugWarehouse";
+import Sales from "./Sales";
+import ColdStorage from "./ColdStorage";
+import Personnel from "./Personnel";
 
 // AquaFarm Pro ölüm modulu: növ, doğum ili, avtomatik yaş və cins.
 
@@ -81,6 +84,7 @@ function App() {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeView, setActiveView] = useState("Hamısı");
+  const [employees, setEmployees] = useState([]);
 
   const [showPondForm, setShowPondForm] = useState(false);
   const [savingPond, setSavingPond] = useState(false);
@@ -174,6 +178,16 @@ function App() {
     }
   };
 
+  const loadEmployees = async () => {
+    try {
+      const response = await authorizedFetch(`${API_URL}/employees`);
+      if (!response.ok) throw new Error("İşçi məlumatları alınmadı");
+      setEmployees(await response.json());
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const loadMortality = async () => {
     try {
       const response = await authorizedFetch(`${API_URL}/mortality`);
@@ -254,7 +268,10 @@ function App() {
   };
 
   useEffect(() => {
-    if (token) loadPonds(token);
+    if (token) {
+      loadPonds(token);
+      loadEmployees();
+    }
   }, [token]);
 
   useEffect(() => {
@@ -844,6 +861,21 @@ function App() {
   const selectedBroodstock = broodstock.find((fish) => fish.id === selectedBroodstockId) || null;
   const broodstockUseYears = [...new Set(broodstockUses.map((record) => new Date(`${record.use_date}T00:00:00`).getFullYear()))].sort((a, b) => b - a);
 
+  const birthdayAlerts = employees
+    .filter((employee) => employee.status === "İşləyir" && employee.birth_date)
+    .map((employee) => {
+      const now = new Date();
+      now.setHours(0, 0, 0, 0);
+      const [, month, day] = employee.birth_date.split("-").map(Number);
+      let birthday = new Date(now.getFullYear(), month - 1, day);
+      birthday.setHours(0, 0, 0, 0);
+      if (birthday < now) birthday.setFullYear(now.getFullYear() + 1);
+      const daysLeft = Math.round((birthday - now) / 86400000);
+      return { ...employee, daysLeft, birthday };
+    })
+    .filter((employee) => employee.daysLeft === 0 || employee.daysLeft === 1)
+    .sort((a, b) => a.daysLeft - b.daysLeft);
+
   if (!token) {
     return (
       <div className="login-page">
@@ -880,6 +912,9 @@ function App() {
           <button>🤲 Yemləmə</button>
           <button className={activeView === "Yem anbarı" ? "active" : ""} onClick={() => setActiveView("Yem anbarı")}>📦 Yem anbarı</button>
           <button className={activeView === "Dərman anbarı" ? "active" : ""} onClick={() => setActiveView("Dərman anbarı")}>💊 Dərman anbarı</button>
+          <button className={activeView === "Satış" ? "active" : ""} onClick={() => setActiveView("Satış")}>🧾 Satış</button>
+          <button className={activeView === "Soyuducu anbarı" ? "active" : ""} onClick={() => setActiveView("Soyuducu anbarı")}>❄️ Soyuducu anbarı</button>
+          <button className={activeView === "İşçi personalı" ? "active" : ""} onClick={() => setActiveView("İşçi personalı")}>👥 İşçi personalı</button>
           <button className={activeView === "Damazlıq balıqlar" ? "active" : ""} onClick={() => setActiveView("Damazlıq balıqlar")}>🐟 Damazlıq balıqlar</button>
           <button className={activeView === "Artım" ? "active" : ""} onClick={() => setActiveView("Artım")}>📈 Artım</button>
           <button className={activeView === "Ölüm" ? "active" : ""} onClick={() => setActiveView("Ölüm")}>⚠️ Ölüm</button>
@@ -892,13 +927,35 @@ function App() {
       <main className="main">
         <header>
           <div>
-            <h1>{activeView === "Ölüm" ? "Ölüm qeydiyyatı" : activeView === "Artım" ? "Balıqların artımı" : activeView === "Yem anbarı" ? "Yem anbarı" : activeView === "Dərman anbarı" ? "Dərman anbarı" : activeView === "Damazlıq balıqlar" ? "Damazlıq balıqlar" : "İdarəetmə paneli"}</h1>
-            <p>{activeView === "Ölüm" ? "Gündəlik ölüm qeydləri və ümumi hesabat" : activeView === "Artım" ? "Çəki, biokütlə, SGR və FCR göstəriciləri" : activeView === "Yem anbarı" ? "Yem ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Dərman anbarı" ? "Dərman ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : "Təsərrüfatın real vaxt üzrə ümumi vəziyyəti"}</p>
+            <h1>{activeView === "Ölüm" ? "Ölüm qeydiyyatı" : activeView === "Artım" ? "Balıqların artımı" : activeView === "Yem anbarı" ? "Yem anbarı" : activeView === "Dərman anbarı" ? "Dərman anbarı" : activeView === "Satış" ? "Satış" : activeView === "Soyuducu anbarı" ? "Soyuducu anbarı" : activeView === "İşçi personalı" ? "İşçi personalı" : activeView === "Damazlıq balıqlar" ? "Damazlıq balıqlar" : "İdarəetmə paneli"}</h1>
+            <p>{activeView === "Ölüm" ? "Gündəlik ölüm qeydləri və ümumi hesabat" : activeView === "Artım" ? "Çəki, biokütlə, SGR və FCR göstəriciləri" : activeView === "Yem anbarı" ? "Yem ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Dərman anbarı" ? "Dərman ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Satış" ? "Balıq satışı, ödəniş və qaimə nəzarəti" : activeView === "Soyuducu anbarı" ? "Soyuducu məhsullarının qəbulu və qalığı" : activeView === "İşçi personalı" ? "İşçilər, davamiyyət, maaş və sənədlər" : "Təsərrüfatın real vaxt üzrə ümumi vəziyyəti"}</p>
           </div>
-          {activeView !== "Ölüm" && activeView !== "Artım" && activeView !== "Yem anbarı" && activeView !== "Dərman anbarı" && activeView !== "Damazlıq balıqlar" && <button className="add-button" onClick={openNewPond}>+ Yeni vahid</button>}
+          {activeView !== "Ölüm" && activeView !== "Artım" && activeView !== "Yem anbarı" && activeView !== "Dərman anbarı" && activeView !== "Satış" && activeView !== "Soyuducu anbarı" && activeView !== "İşçi personalı" && activeView !== "Damazlıq balıqlar" && <button className="add-button" onClick={openNewPond}>+ Yeni vahid</button>}
         </header>
 
         {error && <div className="dashboard-error">{error}</div>}
+
+        {activeView === "Hamısı" && birthdayAlerts.length > 0 && (
+          <section style={{ marginBottom: "20px", display: "grid", gap: "10px" }}>
+            {birthdayAlerts.map((employee) => (
+              <div
+                key={employee.id}
+                style={{
+                  padding: "16px 20px",
+                  borderRadius: "12px",
+                  background: employee.daysLeft === 0 ? "#dcfce7" : "#fff7d6",
+                  border: employee.daysLeft === 0 ? "1px solid #86efac" : "1px solid #facc15",
+                  color: "#334155",
+                  fontWeight: 600,
+                }}
+              >
+                🎂 {employee.daysLeft === 0
+                  ? `Bu gün ${employee.full_name} adlı işçinin doğum günüdür!`
+                  : `Sabah ${employee.full_name} adlı işçinin doğum günüdür — ${employee.birthday.toLocaleDateString("az-AZ", { day: "numeric", month: "long" })}`}
+              </div>
+            ))}
+          </section>
+        )}
 
         {activeView === "Ölüm" ? (
           <>
@@ -1289,6 +1346,12 @@ function App() {
               </table>
             </section>
           </>
+        ) : activeView === "İşçi personalı" ? (
+          <Personnel token={token} />
+        ) : activeView === "Soyuducu anbarı" ? (
+          <ColdStorage token={token} />
+        ) : activeView === "Satış" ? (
+          <Sales token={token} />
         ) : activeView === "Dərman anbarı" ? (
           <DrugWarehouse token={token} />
         ) : activeView === "Yem anbarı" ? (
