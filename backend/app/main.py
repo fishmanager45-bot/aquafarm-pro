@@ -1,9 +1,13 @@
 from datetime import date
-from fastapi import Depends, FastAPI, HTTPException
+from pathlib import Path
+from uuid import uuid4
+
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from sqlalchemy import extract, func
 from sqlalchemy.orm import Session
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from jose import JWTError, jwt
 from app import models, schemas
 from app.database import Base, engine, get_db
@@ -16,17 +20,34 @@ from app.core.security import (
 )
 Base.metadata.create_all(bind=engine)
 
+UPLOAD_ROOT = Path(__file__).resolve().parent.parent / "uploads"
+MORTALITY_UPLOAD_DIR = UPLOAD_ROOT / "mortality"
+MORTALITY_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+
+MAX_PHOTO_SIZE = 10 * 1024 * 1024
+PHOTO_EXTENSIONS = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+}
+
 app = FastAPI(
     title="AquaFarm Pro",
     version="1.0.0",
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[
+    "http://localhost:5173",
+    "http://localhost:5174",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:5174",
+],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.mount("/uploads", StaticFiles(directory=UPLOAD_ROOT), name="uploads")
 
 bearer_scheme = HTTPBearer()
 
@@ -318,6 +339,7 @@ def create_mortality_record(
     pond = (
         db.query(models.Pond)
         .filter(models.Pond.id == mortality.pond_id)
+        .with_for_update()
         .first()
     )
 
@@ -327,10 +349,21 @@ def create_mortality_record(
             detail="Hovuz tapılmadı",
         )
 
+    if mortality.dead_count > pond.fish_count:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Ölüm sayı hovuzdakı balıq sayından çox ola bilməz. "
+                f"Hazırkı balıq sayı: {pond.fish_count}"
+            ),
+        )
+
     new_record = models.MortalityRecord(
-        **mortality.model_dump()
+        **mortality.model_dump(),
+        stock_deducted=True,
     )
 
+    pond.fish_count -= mortality.dead_count
     db.add(new_record)
     db.commit()
     db.refresh(new_record)
@@ -374,6 +407,136 @@ def list_mortality_records(
         )
         .all()
     )
+
+
+@app.post(
+    "/mortality/{record_id}/photos",
+    response_model=schemas.MortalityResponse,
+    dependencies=[Depends(get_current_user)],
+)
+async def upload_mortality_photos(
+    record_id: int,
+    photos: list[UploadFile] = File(...),
+    db: Session = Depends(get_db),
+):
+    record = (
+        db.query(models.MortalityRecord)
+        .filter(models.MortalityRecord.id == record_id)
+        .with_for_update()
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Ölüm qeydi tapılmadı",
+        )
+
+    if not photos:
+        raise HTTPException(
+            status_code=400,
+            detail="Ən azı bir şəkil seçilməlidir",
+        )
+
+    existing_paths = {item.photo_path for item in record.photos}
+    legacy_photo_count = int(
+        bool(record.photo_path and record.photo_path not in existing_paths)
+    )
+    current_photo_count = len(record.photos) + legacy_photo_count
+
+    if current_photo_count + len(photos) > 5:
+        raise HTTPException(
+            status_code=400,
+            detail="Bir ölüm qeydinə maksimum 5 şəkil əlavə etmək olar",
+        )
+
+    prepared_photos = []
+
+    for photo in photos:
+        extension = PHOTO_EXTENSIONS.get(photo.content_type or "")
+        if extension is None:
+            await photo.close()
+            raise HTTPException(
+                status_code=400,
+                detail="Yalnız JPG, PNG və WEBP şəkilləri qəbul edilir",
+            )
+
+        photo_bytes = await photo.read(MAX_PHOTO_SIZE + 1)
+        await photo.close()
+
+        if len(photo_bytes) > MAX_PHOTO_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail="Hər şəklin ölçüsü maksimum 10 MB ola bilər",
+            )
+
+        if not photo_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail="Şəkil faylı boşdur",
+            )
+
+        filename = f"{uuid4().hex}{extension}"
+        prepared_photos.append((filename, photo_bytes))
+
+    written_paths = []
+
+    try:
+        for filename, photo_bytes in prepared_photos:
+            file_path = MORTALITY_UPLOAD_DIR / filename
+            file_path.write_bytes(photo_bytes)
+            written_paths.append(file_path)
+
+            db.add(
+                models.MortalityPhoto(
+                    mortality_record_id=record.id,
+                    photo_path=f"/uploads/mortality/{filename}",
+                )
+            )
+
+        db.commit()
+        db.refresh(record)
+    except Exception:
+        db.rollback()
+        for file_path in written_paths:
+            file_path.unlink(missing_ok=True)
+        raise
+
+    return record
+
+
+@app.delete(
+    "/mortality/{record_id}/photos/{photo_id}",
+    dependencies=[Depends(get_current_user)],
+)
+def delete_mortality_photo(
+    record_id: int,
+    photo_id: int,
+    db: Session = Depends(get_db),
+):
+    photo = (
+        db.query(models.MortalityPhoto)
+        .filter(
+            models.MortalityPhoto.id == photo_id,
+            models.MortalityPhoto.mortality_record_id == record_id,
+        )
+        .first()
+    )
+
+    if photo is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Şəkil tapılmadı",
+        )
+
+    photo_path = photo.photo_path
+    db.delete(photo)
+    db.commit()
+
+    photo_filename = Path(photo_path).name
+    (MORTALITY_UPLOAD_DIR / photo_filename).unlink(missing_ok=True)
+
+    return {"message": "Şəkil uğurla silindi"}
 
 
 @app.get(
@@ -505,21 +668,49 @@ def update_mortality_record(
         exclude_unset=True
     )
 
-    if "pond_id" in updates:
-        pond = (
-            db.query(models.Pond)
-            .filter(models.Pond.id == updates["pond_id"])
-            .first()
+    old_pond_id = record.pond_id
+    old_dead_count = record.dead_count
+    new_pond_id = updates.get("pond_id", old_pond_id)
+    new_dead_count = updates.get("dead_count", old_dead_count)
+
+    pond_ids = sorted({old_pond_id, new_pond_id})
+    locked_ponds = (
+        db.query(models.Pond)
+        .filter(models.Pond.id.in_(pond_ids))
+        .order_by(models.Pond.id)
+        .with_for_update()
+        .all()
+    )
+    pond_map = {pond.id: pond for pond in locked_ponds}
+
+    old_pond = pond_map.get(old_pond_id)
+    new_pond = pond_map.get(new_pond_id)
+
+    if new_pond is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hovuz tapılmadı",
         )
 
-        if pond is None:
-            raise HTTPException(
-                status_code=404,
-                detail="Hovuz tapılmadı",
-            )
+    if record.stock_deducted and old_pond is not None:
+        old_pond.fish_count += old_dead_count
+
+    if new_dead_count > new_pond.fish_count:
+        db.rollback()
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Ölüm sayı hovuzdakı balıq sayından çox ola bilməz. "
+                f"Mövcud balıq sayı: {new_pond.fish_count}"
+            ),
+        )
+
+    new_pond.fish_count -= new_dead_count
 
     for field, value in updates.items():
         setattr(record, field, value)
+
+    record.stock_deducted = True
 
     db.commit()
     db.refresh(record)
@@ -538,6 +729,7 @@ def delete_mortality_record(
     record = (
         db.query(models.MortalityRecord)
         .filter(models.MortalityRecord.id == record_id)
+        .with_for_update()
         .first()
     )
 
@@ -547,9 +739,544 @@ def delete_mortality_record(
             detail="Ölüm qeydi tapılmadı",
         )
 
+    photo_paths = [item.photo_path for item in record.photos]
+    if record.photo_path and record.photo_path not in photo_paths:
+        photo_paths.append(record.photo_path)
+
+    if record.stock_deducted:
+        pond = (
+            db.query(models.Pond)
+            .filter(models.Pond.id == record.pond_id)
+            .with_for_update()
+            .first()
+        )
+        if pond is not None:
+            pond.fish_count += record.dead_count
+
     db.delete(record)
     db.commit()
+
+    for photo_path in photo_paths:
+        photo_filename = Path(photo_path).name
+        (MORTALITY_UPLOAD_DIR / photo_filename).unlink(missing_ok=True)
 
     return {
         "message": "Ölüm qeydi uğurla silindi"
     }
+
+# ==================== GROWTH RECORDS ====================
+
+from math import log
+
+
+@app.post(
+    "/growth",
+    response_model=schemas.GrowthResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def create_growth_record(
+    payload: schemas.GrowthCreate,
+    db: Session = Depends(get_db),
+):
+    pond = (
+        db.query(models.Pond)
+        .filter(models.Pond.id == payload.pond_id)
+        .first()
+    )
+
+    if pond is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Hovuz tapılmadı",
+        )
+
+    existing = (
+        db.query(models.GrowthRecord)
+        .filter(
+            models.GrowthRecord.pond_id == payload.pond_id,
+            models.GrowthRecord.measurement_date
+            == payload.measurement_date,
+        )
+        .first()
+    )
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu tarix üçün ölçü artıq mövcuddur",
+        )
+
+    record = models.GrowthRecord(**payload.model_dump())
+    db.add(record)
+
+    pond.fish_count = payload.fish_count
+    pond.average_weight_g = payload.average_weight_g
+
+    db.commit()
+    db.refresh(record)
+
+    return record
+
+
+@app.put(
+    "/growth/{record_id}",
+    response_model=schemas.GrowthResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def update_growth_record(
+    record_id: int,
+    payload: schemas.GrowthUpdate,
+    db: Session = Depends(get_db),
+):
+    record = (
+        db.query(models.GrowthRecord)
+        .filter(models.GrowthRecord.id == record_id)
+        .first()
+    )
+
+    if record is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Artım qeydi tapılmadı",
+        )
+
+    update_data = payload.model_dump(exclude_unset=True)
+    new_date = update_data.get(
+        "measurement_date",
+        record.measurement_date,
+    )
+
+    duplicate = (
+        db.query(models.GrowthRecord)
+        .filter(
+            models.GrowthRecord.pond_id == record.pond_id,
+            models.GrowthRecord.measurement_date == new_date,
+            models.GrowthRecord.id != record.id,
+        )
+        .first()
+    )
+
+    if duplicate is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu tarix üçün ölçü artıq mövcuddur",
+        )
+
+    for field, value in update_data.items():
+        setattr(record, field, value)
+
+    db.flush()
+
+    latest_record = (
+        db.query(models.GrowthRecord)
+        .filter(models.GrowthRecord.pond_id == record.pond_id)
+        .order_by(
+            models.GrowthRecord.measurement_date.desc(),
+            models.GrowthRecord.id.desc(),
+        )
+        .first()
+    )
+    pond = (
+        db.query(models.Pond)
+        .filter(models.Pond.id == record.pond_id)
+        .first()
+    )
+
+    if pond is not None and latest_record is not None:
+        pond.fish_count = latest_record.fish_count
+        pond.average_weight_g = latest_record.average_weight_g
+
+    db.commit()
+    db.refresh(record)
+
+    return record
+
+
+@app.get(
+    "/growth",
+    response_model=list[schemas.GrowthResponse],
+    dependencies=[Depends(get_current_user)],
+)
+def list_growth_records(
+    pond_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.GrowthRecord)
+
+    if pond_id is not None:
+        query = query.filter(
+            models.GrowthRecord.pond_id == pond_id
+        )
+
+    return (
+        query.order_by(
+            models.GrowthRecord.measurement_date.desc(),
+            models.GrowthRecord.id.desc(),
+        )
+        .all()
+    )
+
+
+@app.get(
+    "/growth/calculations",
+    response_model=list[schemas.GrowthCalculation],
+    dependencies=[Depends(get_current_user)],
+)
+def calculate_growth_records(
+    pond_id: int | None = None,
+    db: Session = Depends(get_db),
+):
+    query = db.query(models.GrowthRecord)
+
+    if pond_id is not None:
+        query = query.filter(
+            models.GrowthRecord.pond_id == pond_id
+        )
+
+    records = (
+        query.order_by(
+            models.GrowthRecord.pond_id.asc(),
+            models.GrowthRecord.measurement_date.asc(),
+            models.GrowthRecord.id.asc(),
+        )
+        .all()
+    )
+
+    results = []
+    previous_by_pond = {}
+
+    for record in records:
+        previous = previous_by_pond.get(record.pond_id)
+
+        current_biomass = (
+            record.fish_count
+            * record.average_weight_g
+            / 1000
+        )
+
+        calculation = {
+            "record_id": record.id,
+            "pond_id": record.pond_id,
+            "measurement_date": record.measurement_date,
+            "previous_date": None,
+            "previous_weight_g": None,
+            "current_weight_g": record.average_weight_g,
+            "days_between": None,
+            "weight_gain_g": None,
+            "daily_weight_gain_g": None,
+            "growth_percent": None,
+            "sgr_percent_day": None,
+            "previous_biomass_kg": None,
+            "current_biomass_kg": round(current_biomass, 4),
+            "biomass_gain_kg": None,
+            "feed_used_kg": record.feed_used_kg,
+            "fcr": None,
+        }
+
+        if previous is not None:
+            days = (
+                record.measurement_date
+                - previous.measurement_date
+            ).days
+
+            weight_gain = (
+                record.average_weight_g
+                - previous.average_weight_g
+            )
+
+            previous_biomass = (
+                previous.fish_count
+                * previous.average_weight_g
+                / 1000
+            )
+
+            biomass_gain = (
+                current_biomass
+                - previous_biomass
+            )
+
+            calculation["previous_date"] = (
+                previous.measurement_date
+            )
+            calculation["previous_weight_g"] = round(
+                previous.average_weight_g,
+                4,
+            )
+            calculation["days_between"] = days
+            calculation["weight_gain_g"] = round(
+                weight_gain,
+                4,
+            )
+            calculation["previous_biomass_kg"] = round(
+                previous_biomass,
+                4,
+            )
+            calculation["biomass_gain_kg"] = round(
+                biomass_gain,
+                4,
+            )
+
+            if days > 0:
+                calculation["daily_weight_gain_g"] = round(
+                    weight_gain / days,
+                    4,
+                )
+
+                if previous.average_weight_g > 0:
+                    calculation["growth_percent"] = round(
+                        weight_gain
+                        / previous.average_weight_g
+                        * 100,
+                        4,
+                    )
+
+                    calculation["sgr_percent_day"] = round(
+                        (
+                            log(record.average_weight_g)
+                            - log(previous.average_weight_g)
+                        )
+                        / days
+                        * 100,
+                        4,
+                    )
+
+            if biomass_gain > 0:
+                calculation["fcr"] = round(
+                    record.feed_used_kg / biomass_gain,
+                    4,
+                )
+
+        results.append(calculation)
+        previous_by_pond[record.pond_id] = record
+
+    return results
+
+
+# ==================== FEED WAREHOUSE ====================
+@app.get("/feed-warehouse/products", response_model=list[schemas.FeedProductResponse], dependencies=[Depends(get_current_user)])
+def list_feed_products(db: Session = Depends(get_db)):
+    return db.query(models.FeedProduct).order_by(models.FeedProduct.brand, models.FeedProduct.product_name).all()
+
+
+@app.post("/feed-warehouse/products", response_model=schemas.FeedProductResponse, dependencies=[Depends(get_current_user)])
+def create_feed_product(payload: schemas.FeedProductCreate, db: Session = Depends(get_db)):
+    product = models.FeedProduct(**payload.model_dump())
+    db.add(product)
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+@app.put("/feed-warehouse/products/{product_id}", response_model=schemas.FeedProductResponse, dependencies=[Depends(get_current_user)])
+def update_feed_product(product_id: int, payload: schemas.FeedProductUpdate, db: Session = Depends(get_db)):
+    product = db.query(models.FeedProduct).filter(models.FeedProduct.id == product_id).first()
+    if product is None:
+        raise HTTPException(status_code=404, detail="Yem məhsulu tapılmadı")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(product, field, value)
+    db.commit()
+    db.refresh(product)
+    return product
+
+
+@app.delete("/feed-warehouse/products/{product_id}", dependencies=[Depends(get_current_user)])
+def delete_feed_product(product_id: int, db: Session = Depends(get_db)):
+    product = db.query(models.FeedProduct).filter(models.FeedProduct.id == product_id).first()
+    if product is None:
+        raise HTTPException(status_code=404, detail="Yem məhsulu tapılmadı")
+    db.query(models.FeedStockTransaction).filter(models.FeedStockTransaction.product_id == product_id).delete()
+    db.delete(product)
+    db.commit()
+    return {"message": "Yem məhsulu silindi"}
+
+
+@app.get("/feed-warehouse/transactions", response_model=list[schemas.FeedTransactionResponse], dependencies=[Depends(get_current_user)])
+def list_feed_transactions(db: Session = Depends(get_db)):
+    return db.query(models.FeedStockTransaction).order_by(models.FeedStockTransaction.transaction_date.desc(), models.FeedStockTransaction.id.desc()).all()
+
+
+def _feed_stock_delta(transaction_type: str, quantity_kg: float) -> float:
+    if transaction_type == "Giriş":
+        return quantity_kg
+    if transaction_type == "Çıxış":
+        return -quantity_kg
+    raise HTTPException(status_code=400, detail="Əməliyyat tipi Giriş və ya Çıxış olmalıdır")
+
+
+@app.post("/feed-warehouse/transactions", response_model=schemas.FeedTransactionResponse, dependencies=[Depends(get_current_user)])
+def create_feed_transaction(payload: schemas.FeedTransactionCreate, db: Session = Depends(get_db)):
+    product = db.query(models.FeedProduct).filter(models.FeedProduct.id == payload.product_id).with_for_update().first()
+    if product is None:
+        raise HTTPException(status_code=404, detail="Yem məhsulu tapılmadı")
+    delta = _feed_stock_delta(payload.transaction_type, payload.quantity_kg)
+    if product.current_stock_kg + delta < 0:
+        raise HTTPException(status_code=400, detail="Anbarda kifayət qədər yem yoxdur")
+    transaction = models.FeedStockTransaction(**payload.model_dump())
+    product.current_stock_kg += delta
+    if payload.transaction_type == "Giriş" and payload.unit_price is not None:
+        product.unit_price = payload.unit_price
+    db.add(transaction)
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
+@app.put("/feed-warehouse/transactions/{transaction_id}", response_model=schemas.FeedTransactionResponse, dependencies=[Depends(get_current_user)])
+def update_feed_transaction(transaction_id: int, payload: schemas.FeedTransactionUpdate, db: Session = Depends(get_db)):
+    transaction = db.query(models.FeedStockTransaction).filter(models.FeedStockTransaction.id == transaction_id).with_for_update().first()
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Anbar əməliyyatı tapılmadı")
+    product = db.query(models.FeedProduct).filter(models.FeedProduct.id == transaction.product_id).with_for_update().first()
+    restored_stock = product.current_stock_kg - _feed_stock_delta(transaction.transaction_type, transaction.quantity_kg)
+    update_data = payload.model_dump(exclude_unset=True)
+    new_type = update_data.get("transaction_type", transaction.transaction_type)
+    new_quantity = update_data.get("quantity_kg", transaction.quantity_kg)
+    new_stock = restored_stock + _feed_stock_delta(new_type, new_quantity)
+    if new_stock < 0:
+        raise HTTPException(status_code=400, detail="Anbarda kifayət qədər yem yoxdur")
+    for field, value in update_data.items():
+        setattr(transaction, field, value)
+    product.current_stock_kg = new_stock
+    if new_type == "Giriş" and transaction.unit_price is not None:
+        product.unit_price = transaction.unit_price
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
+@app.delete("/feed-warehouse/transactions/{transaction_id}", dependencies=[Depends(get_current_user)])
+def delete_feed_transaction(transaction_id: int, db: Session = Depends(get_db)):
+    transaction = db.query(models.FeedStockTransaction).filter(models.FeedStockTransaction.id == transaction_id).with_for_update().first()
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Anbar əməliyyatı tapılmadı")
+    product = db.query(models.FeedProduct).filter(models.FeedProduct.id == transaction.product_id).with_for_update().first()
+    new_stock = product.current_stock_kg - _feed_stock_delta(transaction.transaction_type, transaction.quantity_kg)
+    if new_stock < 0:
+        raise HTTPException(status_code=400, detail="Bu giriş silinsə stok mənfi olacaq; əvvəl sonrakı çıxışları düzəldin")
+    product.current_stock_kg = new_stock
+    db.delete(transaction)
+    db.commit()
+    return {"message": "Anbar əməliyyatı silindi"}
+
+
+@app.post("/feed-warehouse/transactions/{transaction_id}/document", response_model=schemas.FeedTransactionResponse, dependencies=[Depends(get_current_user)])
+async def upload_feed_transaction_document(
+    transaction_id: int,
+    document: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    transaction = db.query(models.FeedStockTransaction).filter(models.FeedStockTransaction.id == transaction_id).first()
+    if transaction is None:
+        raise HTTPException(status_code=404, detail="Anbar əməliyyatı tapılmadı")
+
+    allowed_types = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }
+    extension = allowed_types.get(document.content_type)
+    if extension is None:
+        raise HTTPException(status_code=400, detail="Yalnız JPG, PNG və WEBP şəkli qəbul edilir")
+
+    content = await document.read()
+    if len(content) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Qaimə şəkli maksimum 10 MB ola bilər")
+
+    document_dir = UPLOAD_ROOT / "feed_documents"
+    document_dir.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid4().hex}{extension}"
+    (document_dir / filename).write_bytes(content)
+
+    if transaction.document_path:
+        old_file = document_dir / Path(transaction.document_path).name
+        old_file.unlink(missing_ok=True)
+
+    transaction.document_path = f"/uploads/feed_documents/{filename}"
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
+# ==================== BROODSTOCK ====================
+@app.get("/broodstock", response_model=list[schemas.BroodstockResponse], dependencies=[Depends(get_current_user)])
+def list_broodstock(db: Session = Depends(get_db)):
+    return db.query(models.BroodstockFish).order_by(models.BroodstockFish.chip_number).all()
+
+@app.post("/broodstock", response_model=schemas.BroodstockResponse, dependencies=[Depends(get_current_user)])
+def create_broodstock(payload: schemas.BroodstockCreate, db: Session = Depends(get_db)):
+    if db.query(models.BroodstockFish).filter(models.BroodstockFish.chip_number == payload.chip_number).first():
+        raise HTTPException(status_code=400, detail="Bu çip nömrəsi artıq mövcuddur")
+    fish = models.BroodstockFish(**payload.model_dump())
+    db.add(fish); db.commit(); db.refresh(fish)
+    return fish
+
+@app.put("/broodstock/{fish_id}", response_model=schemas.BroodstockResponse, dependencies=[Depends(get_current_user)])
+def update_broodstock(fish_id: int, payload: schemas.BroodstockUpdate, db: Session = Depends(get_db)):
+    fish = db.query(models.BroodstockFish).filter(models.BroodstockFish.id == fish_id).first()
+    if fish is None: raise HTTPException(status_code=404, detail="Damazlıq balıq tapılmadı")
+    data = payload.model_dump(exclude_unset=True)
+    if "chip_number" in data and db.query(models.BroodstockFish).filter(models.BroodstockFish.chip_number == data["chip_number"], models.BroodstockFish.id != fish_id).first():
+        raise HTTPException(status_code=400, detail="Bu çip nömrəsi artıq mövcuddur")
+    for field, value in data.items(): setattr(fish, field, value)
+    db.commit(); db.refresh(fish)
+    return fish
+
+@app.delete("/broodstock/{fish_id}", dependencies=[Depends(get_current_user)])
+def delete_broodstock(fish_id: int, db: Session = Depends(get_db)):
+    fish = db.query(models.BroodstockFish).filter(models.BroodstockFish.id == fish_id).first()
+    if fish is None: raise HTTPException(status_code=404, detail="Damazlıq balıq tapılmadı")
+    db.query(models.BroodstockUseRecord).filter(models.BroodstockUseRecord.broodstock_id == fish_id).delete()
+    db.query(models.PolarizationRecord).filter(models.PolarizationRecord.broodstock_id == fish_id).delete()
+    db.delete(fish); db.commit()
+    return {"message": "Damazlıq balıq silindi"}
+
+@app.post("/broodstock/{fish_id}/photo", response_model=schemas.BroodstockResponse, dependencies=[Depends(get_current_user)])
+async def upload_broodstock_photo(fish_id: int, photo: UploadFile = File(...), db: Session = Depends(get_db)):
+    fish = db.query(models.BroodstockFish).filter(models.BroodstockFish.id == fish_id).first()
+    if fish is None: raise HTTPException(status_code=404, detail="Damazlıq balıq tapılmadı")
+    allowed = {"image/jpeg": ".jpg", "image/png": ".png", "image/webp": ".webp"}
+    extension = allowed.get(photo.content_type)
+    if extension is None: raise HTTPException(status_code=400, detail="Yalnız JPG, PNG və WEBP qəbul edilir")
+    content = await photo.read()
+    if len(content) > 10 * 1024 * 1024: raise HTTPException(status_code=400, detail="Şəkil maksimum 10 MB ola bilər")
+    directory = UPLOAD_ROOT / "broodstock"; directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid4().hex}{extension}"; (directory / filename).write_bytes(content)
+    if fish.photo_path: (directory / Path(fish.photo_path).name).unlink(missing_ok=True)
+    fish.photo_path = f"/uploads/broodstock/{filename}"
+    db.commit(); db.refresh(fish)
+    return fish
+
+@app.get("/broodstock/{fish_id}/uses", response_model=list[schemas.BroodstockUseResponse], dependencies=[Depends(get_current_user)])
+def list_broodstock_uses(fish_id: int, db: Session = Depends(get_db)):
+    return db.query(models.BroodstockUseRecord).filter(models.BroodstockUseRecord.broodstock_id == fish_id).order_by(models.BroodstockUseRecord.use_date.desc()).all()
+
+@app.post("/broodstock/{fish_id}/uses", response_model=schemas.BroodstockUseResponse, dependencies=[Depends(get_current_user)])
+def create_broodstock_use(fish_id: int, payload: schemas.BroodstockUseCreate, db: Session = Depends(get_db)):
+    if not db.query(models.BroodstockFish).filter(models.BroodstockFish.id == fish_id).first(): raise HTTPException(status_code=404, detail="Damazlıq balıq tapılmadı")
+    record = models.BroodstockUseRecord(broodstock_id=fish_id, **payload.model_dump())
+    db.add(record); db.commit(); db.refresh(record)
+    return record
+
+@app.delete("/broodstock/uses/{record_id}", dependencies=[Depends(get_current_user)])
+def delete_broodstock_use(record_id: int, db: Session = Depends(get_db)):
+    record = db.query(models.BroodstockUseRecord).filter(models.BroodstockUseRecord.id == record_id).first()
+    if record is None: raise HTTPException(status_code=404, detail="İstifadə qeydi tapılmadı")
+    db.delete(record); db.commit(); return {"message": "İstifadə qeydi silindi"}
+
+@app.get("/broodstock/{fish_id}/polarizations", response_model=list[schemas.PolarizationResponse], dependencies=[Depends(get_current_user)])
+def list_polarizations(fish_id: int, db: Session = Depends(get_db)):
+    return db.query(models.PolarizationRecord).filter(models.PolarizationRecord.broodstock_id == fish_id).order_by(models.PolarizationRecord.measurement_date.desc()).all()
+
+@app.post("/broodstock/{fish_id}/polarizations", response_model=schemas.PolarizationResponse, dependencies=[Depends(get_current_user)])
+def create_polarization(fish_id: int, payload: schemas.PolarizationCreate, db: Session = Depends(get_db)):
+    if not db.query(models.BroodstockFish).filter(models.BroodstockFish.id == fish_id).first(): raise HTTPException(status_code=404, detail="Damazlıq balıq tapılmadı")
+    record = models.PolarizationRecord(broodstock_id=fish_id, **payload.model_dump())
+    db.add(record); db.commit(); db.refresh(record)
+    return record
+
+@app.delete("/broodstock/polarizations/{record_id}", dependencies=[Depends(get_current_user)])
+def delete_polarization(record_id: int, db: Session = Depends(get_db)):
+    record = db.query(models.PolarizationRecord).filter(models.PolarizationRecord.id == record_id).first()
+    if record is None: raise HTTPException(status_code=404, detail="Polarizasiya qeydi tapılmadı")
+    db.delete(record); db.commit(); return {"message": "Polarizasiya qeydi silindi"}
+
