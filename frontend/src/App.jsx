@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import "./App.css";
+import DrugWarehouse from "./DrugWarehouse";
 
 // AquaFarm Pro ölüm modulu: növ, doğum ili, avtomatik yaş və cins.
 
@@ -878,6 +879,7 @@ function App() {
           <button>🐟 Balıq partiyaları</button>
           <button>🤲 Yemləmə</button>
           <button className={activeView === "Yem anbarı" ? "active" : ""} onClick={() => setActiveView("Yem anbarı")}>📦 Yem anbarı</button>
+          <button className={activeView === "Dərman anbarı" ? "active" : ""} onClick={() => setActiveView("Dərman anbarı")}>💊 Dərman anbarı</button>
           <button className={activeView === "Damazlıq balıqlar" ? "active" : ""} onClick={() => setActiveView("Damazlıq balıqlar")}>🐟 Damazlıq balıqlar</button>
           <button className={activeView === "Artım" ? "active" : ""} onClick={() => setActiveView("Artım")}>📈 Artım</button>
           <button className={activeView === "Ölüm" ? "active" : ""} onClick={() => setActiveView("Ölüm")}>⚠️ Ölüm</button>
@@ -890,10 +892,10 @@ function App() {
       <main className="main">
         <header>
           <div>
-            <h1>{activeView === "Ölüm" ? "Ölüm qeydiyyatı" : activeView === "Artım" ? "Balıqların artımı" : activeView === "Yem anbarı" ? "Yem anbarı" : activeView === "Damazlıq balıqlar" ? "Damazlıq balıqlar" : "İdarəetmə paneli"}</h1>
-            <p>{activeView === "Ölüm" ? "Gündəlik ölüm qeydləri və ümumi hesabat" : activeView === "Artım" ? "Çəki, biokütlə, SGR və FCR göstəriciləri" : activeView === "Yem anbarı" ? "Yem ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : "Təsərrüfatın real vaxt üzrə ümumi vəziyyəti"}</p>
+            <h1>{activeView === "Ölüm" ? "Ölüm qeydiyyatı" : activeView === "Artım" ? "Balıqların artımı" : activeView === "Yem anbarı" ? "Yem anbarı" : activeView === "Dərman anbarı" ? "Dərman anbarı" : activeView === "Damazlıq balıqlar" ? "Damazlıq balıqlar" : "İdarəetmə paneli"}</h1>
+            <p>{activeView === "Ölüm" ? "Gündəlik ölüm qeydləri və ümumi hesabat" : activeView === "Artım" ? "Çəki, biokütlə, SGR və FCR göstəriciləri" : activeView === "Yem anbarı" ? "Yem ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Dərman anbarı" ? "Dərman ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : "Təsərrüfatın real vaxt üzrə ümumi vəziyyəti"}</p>
           </div>
-          {activeView !== "Ölüm" && activeView !== "Artım" && activeView !== "Yem anbarı" && activeView !== "Damazlıq balıqlar" && <button className="add-button" onClick={openNewPond}>+ Yeni vahid</button>}
+          {activeView !== "Ölüm" && activeView !== "Artım" && activeView !== "Yem anbarı" && activeView !== "Dərman anbarı" && activeView !== "Damazlıq balıqlar" && <button className="add-button" onClick={openNewPond}>+ Yeni vahid</button>}
         </header>
 
         {error && <div className="dashboard-error">{error}</div>}
@@ -1287,6 +1289,8 @@ function App() {
               </table>
             </section>
           </>
+        ) : activeView === "Dərman anbarı" ? (
+          <DrugWarehouse token={token} />
         ) : activeView === "Yem anbarı" ? (
           <>
             <section className="cards">

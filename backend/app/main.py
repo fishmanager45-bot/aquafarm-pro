@@ -1280,3 +1280,94 @@ def delete_polarization(record_id: int, db: Session = Depends(get_db)):
     if record is None: raise HTTPException(status_code=404, detail="Polarizasiya qeydi tapılmadı")
     db.delete(record); db.commit(); return {"message": "Polarizasiya qeydi silindi"}
 
+# ==================== DRUG WAREHOUSE ====================
+def _drug_delta(transaction_type: str, quantity: float) -> float:
+    if transaction_type == "Giriş": return quantity
+    if transaction_type == "Çıxış": return -quantity
+    raise HTTPException(status_code=400, detail="Əməliyyat növü Giriş və ya Çıxış olmalıdır")
+
+@app.get("/drug-warehouse/products", response_model=list[schemas.DrugProductResponse], dependencies=[Depends(get_current_user)])
+def list_drug_products(db: Session = Depends(get_db)):
+    return db.query(models.DrugProduct).order_by(models.DrugProduct.name).all()
+
+@app.post("/drug-warehouse/products", response_model=schemas.DrugProductResponse, dependencies=[Depends(get_current_user)])
+def create_drug_product(payload: schemas.DrugProductCreate, db: Session = Depends(get_db)):
+    product = models.DrugProduct(**payload.model_dump())
+    db.add(product); db.commit(); db.refresh(product)
+    return product
+
+@app.put("/drug-warehouse/products/{product_id}", response_model=schemas.DrugProductResponse, dependencies=[Depends(get_current_user)])
+def update_drug_product(product_id: int, payload: schemas.DrugProductUpdate, db: Session = Depends(get_db)):
+    product = db.query(models.DrugProduct).filter(models.DrugProduct.id == product_id).first()
+    if product is None: raise HTTPException(status_code=404, detail="Dərman tapılmadı")
+    for field, value in payload.model_dump(exclude_unset=True).items(): setattr(product, field, value)
+    db.commit(); db.refresh(product)
+    return product
+
+@app.delete("/drug-warehouse/products/{product_id}", dependencies=[Depends(get_current_user)])
+def delete_drug_product(product_id: int, db: Session = Depends(get_db)):
+    product = db.query(models.DrugProduct).filter(models.DrugProduct.id == product_id).first()
+    if product is None: raise HTTPException(status_code=404, detail="Dərman tapılmadı")
+    if db.query(models.DrugStockTransaction).filter(models.DrugStockTransaction.product_id == product_id).first():
+        raise HTTPException(status_code=400, detail="Bu dərmanın əməliyyat tarixçəsi var; əvvəlcə tarixçəni silin")
+    db.delete(product); db.commit(); return {"message": "Dərman silindi"}
+
+@app.get("/drug-warehouse/transactions", response_model=list[schemas.DrugTransactionResponse], dependencies=[Depends(get_current_user)])
+def list_drug_transactions(db: Session = Depends(get_db)):
+    return db.query(models.DrugStockTransaction).order_by(models.DrugStockTransaction.transaction_date.desc(), models.DrugStockTransaction.id.desc()).all()
+
+@app.post("/drug-warehouse/transactions", response_model=schemas.DrugTransactionResponse, dependencies=[Depends(get_current_user)])
+def create_drug_transaction(payload: schemas.DrugTransactionCreate, db: Session = Depends(get_db)):
+    product = db.query(models.DrugProduct).filter(models.DrugProduct.id == payload.product_id).with_for_update().first()
+    if product is None: raise HTTPException(status_code=404, detail="Dərman tapılmadı")
+    new_stock = product.current_stock + _drug_delta(payload.transaction_type, payload.quantity)
+    if new_stock < 0: raise HTTPException(status_code=400, detail="Anbarda kifayət qədər qalıq yoxdur")
+    product.current_stock = new_stock
+    if payload.unit_price is not None and payload.transaction_type == "Giriş": product.unit_price = payload.unit_price
+    transaction = models.DrugStockTransaction(**payload.model_dump())
+    db.add(transaction); db.commit(); db.refresh(transaction)
+    return transaction
+
+@app.put("/drug-warehouse/transactions/{transaction_id}", response_model=schemas.DrugTransactionResponse, dependencies=[Depends(get_current_user)])
+def update_drug_transaction(transaction_id: int, payload: schemas.DrugTransactionUpdate, db: Session = Depends(get_db)):
+    transaction = db.query(models.DrugStockTransaction).filter(models.DrugStockTransaction.id == transaction_id).with_for_update().first()
+    if transaction is None: raise HTTPException(status_code=404, detail="Əməliyyat tapılmadı")
+    product = db.query(models.DrugProduct).filter(models.DrugProduct.id == transaction.product_id).with_for_update().first()
+    data = payload.model_dump(exclude_unset=True)
+    new_type = data.get("transaction_type", transaction.transaction_type)
+    new_quantity = data.get("quantity", transaction.quantity)
+    restored_stock = product.current_stock - _drug_delta(transaction.transaction_type, transaction.quantity)
+    new_stock = restored_stock + _drug_delta(new_type, new_quantity)
+    if new_stock < 0: raise HTTPException(status_code=400, detail="Bu dəyişiklik üçün anbarda kifayət qədər qalıq yoxdur")
+    product.current_stock = new_stock
+    for field, value in data.items(): setattr(transaction, field, value)
+    if transaction.unit_price is not None and transaction.transaction_type == "Giriş": product.unit_price = transaction.unit_price
+    db.commit(); db.refresh(transaction)
+    return transaction
+
+@app.delete("/drug-warehouse/transactions/{transaction_id}", dependencies=[Depends(get_current_user)])
+def delete_drug_transaction(transaction_id: int, db: Session = Depends(get_db)):
+    transaction = db.query(models.DrugStockTransaction).filter(models.DrugStockTransaction.id == transaction_id).with_for_update().first()
+    if transaction is None: raise HTTPException(status_code=404, detail="Əməliyyat tapılmadı")
+    product = db.query(models.DrugProduct).filter(models.DrugProduct.id == transaction.product_id).with_for_update().first()
+    new_stock = product.current_stock - _drug_delta(transaction.transaction_type, transaction.quantity)
+    if new_stock < 0: raise HTTPException(status_code=400, detail="Bu giriş qeydini silmək olmaz: stok artıq istifadə edilib")
+    product.current_stock = new_stock
+    if transaction.document_path:
+        (UPLOAD_ROOT / "drug_invoices" / Path(transaction.document_path).name).unlink(missing_ok=True)
+    db.delete(transaction); db.commit(); return {"message": "Əməliyyat silindi"}
+
+@app.post("/drug-warehouse/transactions/{transaction_id}/document", response_model=schemas.DrugTransactionResponse, dependencies=[Depends(get_current_user)])
+async def upload_drug_document(transaction_id: int, photo: UploadFile = File(...), db: Session = Depends(get_db)):
+    transaction = db.query(models.DrugStockTransaction).filter(models.DrugStockTransaction.id == transaction_id).first()
+    if transaction is None: raise HTTPException(status_code=404, detail="Əməliyyat tapılmadı")
+    extension = PHOTO_EXTENSIONS.get(photo.content_type)
+    if extension is None: raise HTTPException(status_code=400, detail="Yalnız JPG, PNG və WEBP qəbul edilir")
+    content = await photo.read()
+    if len(content) > MAX_PHOTO_SIZE: raise HTTPException(status_code=400, detail="Şəkil maksimum 10 MB ola bilər")
+    directory = UPLOAD_ROOT / "drug_invoices"; directory.mkdir(parents=True, exist_ok=True)
+    filename = f"{uuid4().hex}{extension}"; (directory / filename).write_bytes(content)
+    if transaction.document_path: (directory / Path(transaction.document_path).name).unlink(missing_ok=True)
+    transaction.document_path = f"/uploads/drug_invoices/{filename}"
+    db.commit(); db.refresh(transaction)
+    return transaction

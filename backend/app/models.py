@@ -387,3 +387,40 @@ class PolarizationRecord(Base):
     notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
 
+# ==================== DRUG WAREHOUSE ====================
+class DrugProduct(Base):
+    __tablename__ = "drug_products"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(150), index=True, nullable=False)
+    category: Mapped[str] = mapped_column(String(80), index=True, nullable=False)
+    manufacturer: Mapped[str | None] = mapped_column(String(150), nullable=True)
+    supplier: Mapped[str | None] = mapped_column(String(150), index=True, nullable=True)
+    active_ingredient: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    concentration: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    unit: Mapped[str] = mapped_column(String(20), default="ədəd", nullable=False)
+    batch_number: Mapped[str | None] = mapped_column(String(100), index=True, nullable=True)
+    manufacture_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column(Date, index=True, nullable=True)
+    unit_price: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    minimum_stock: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    current_stock: Mapped[float] = mapped_column(Float, default=0, nullable=False)
+    storage_condition: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, onupdate=datetime.now, nullable=False)
+
+
+class DrugStockTransaction(Base):
+    __tablename__ = "drug_stock_transactions"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    product_id: Mapped[int] = mapped_column(ForeignKey("drug_products.id"), index=True, nullable=False)
+    transaction_type: Mapped[str] = mapped_column(String(20), index=True, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    transaction_date: Mapped[date] = mapped_column(Date, default=date.today, index=True, nullable=False)
+    unit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    purpose: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    document_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.now, nullable=False)

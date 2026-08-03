@@ -433,3 +433,72 @@ class PolarizationResponse(PolarizationCreate):
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
 
+# ==================== DRUG WAREHOUSE ====================
+class DrugProductCreate(BaseModel):
+    name: str
+    category: str
+    manufacturer: str | None = None
+    supplier: str | None = None
+    active_ingredient: str | None = None
+    concentration: str | None = None
+    unit: str = "ədəd"
+    batch_number: str | None = None
+    manufacture_date: date | None = None
+    expiry_date: date | None = None
+    unit_price: float = Field(default=0, ge=0)
+    minimum_stock: float = Field(default=0, ge=0)
+    storage_condition: str | None = None
+    notes: str | None = None
+
+class DrugProductUpdate(BaseModel):
+    name: str | None = None
+    category: str | None = None
+    manufacturer: str | None = None
+    supplier: str | None = None
+    active_ingredient: str | None = None
+    concentration: str | None = None
+    unit: str | None = None
+    batch_number: str | None = None
+    manufacture_date: date | None = None
+    expiry_date: date | None = None
+    unit_price: float | None = Field(default=None, ge=0)
+    minimum_stock: float | None = Field(default=None, ge=0)
+    storage_condition: str | None = None
+    notes: str | None = None
+
+class DrugProductResponse(DrugProductCreate):
+    id: int
+    current_stock: float
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+class DrugTransactionCreate(BaseModel):
+    product_id: int
+    transaction_type: str
+    quantity: float = Field(gt=0)
+    transaction_date: date = Field(default_factory=date.today)
+    unit_price: float | None = Field(default=None, ge=0)
+    purpose: str | None = None
+    notes: str | None = None
+
+class DrugTransactionUpdate(BaseModel):
+    transaction_type: str | None = None
+    quantity: float | None = Field(default=None, gt=0)
+    transaction_date: date | None = None
+    unit_price: float | None = Field(default=None, ge=0)
+    purpose: str | None = None
+    notes: str | None = None
+
+class DrugTransactionResponse(BaseModel):
+    id: int
+    product_id: int
+    transaction_type: str
+    quantity: float
+    transaction_date: date
+    unit_price: float | None
+    purpose: str | None
+    notes: str | None
+    document_path: str | None = None
+    created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
