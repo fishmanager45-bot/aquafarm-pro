@@ -1,10 +1,30 @@
-﻿from datetime import date, datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class SectorCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class SectorUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=500)
+
+
+class SectorResponse(BaseModel):
+    id: int
+    name: str
+    description: str | None
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class PondCreate(BaseModel):
     name: str
+    sector_id: int | None = None
     unit_type: str = "Hovuz"
     area_m2: float = 0
     species: str | None = None
@@ -31,6 +51,7 @@ class PondResponse(PondCreate):
 
 class PondUpdate(BaseModel):
     name: str | None = None
+    sector_id: int | None = None
     unit_type: str | None = None
     area_m2: float | None = None
     species: str | None = None
@@ -501,4 +522,259 @@ class DrugTransactionResponse(BaseModel):
     notes: str | None
     document_path: str | None = None
     created_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+# ==================== SALES ====================
+class SaleCreate(BaseModel):
+    sale_date: date = Field(default_factory=date.today)
+    pond_id: int | None = None
+    source_type: str = "Hovuz"
+    cold_storage_batch_id: int | None = None
+    source_type: str = "Hovuz"
+    cold_storage_batch_id: int | None = None
+    customer_name: str
+    customer_phone: str | None = None
+    invoice_number: str | None = None
+    species: str
+    sale_form: str
+    fish_count: int = Field(gt=0)
+    total_weight_kg: float = Field(gt=0)
+    price_per_kg: float = Field(ge=0)
+    payment_status: str = "Ödənilməyib"
+    paid_amount: float = Field(default=0, ge=0)
+    notes: str | None = None
+
+class SaleUpdate(BaseModel):
+    sale_date: date | None = None
+    pond_id: int | None = None
+    source_type: str | None = None
+    cold_storage_batch_id: int | None = None
+    source_type: str | None = None
+    cold_storage_batch_id: int | None = None
+    customer_name: str | None = None
+    customer_phone: str | None = None
+    invoice_number: str | None = None
+    species: str | None = None
+    sale_form: str | None = None
+    fish_count: int | None = Field(default=None, gt=0)
+    total_weight_kg: float | None = Field(default=None, gt=0)
+    price_per_kg: float | None = Field(default=None, ge=0)
+    payment_status: str | None = None
+    paid_amount: float | None = Field(default=None, ge=0)
+    notes: str | None = None
+
+class SaleResponse(BaseModel):
+    id: int
+    sale_date: date
+    pond_id: int | None
+    source_type: str
+    cold_storage_batch_id: int | None
+    customer_name: str
+    customer_phone: str | None
+    invoice_number: str | None
+    species: str
+    sale_form: str
+    fish_count: int
+    total_weight_kg: float
+    price_per_kg: float
+    total_amount: float
+    payment_status: str
+    paid_amount: float
+    notes: str | None
+    document_path: str | None = None
+    stock_deducted: bool
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== COLD STORAGE ====================
+class ColdStorageCreate(BaseModel):
+    received_date: date = Field(default_factory=date.today)
+    species: str
+    product_form: str
+    source_pond_id: int | None = None
+    source_note: str | None = None
+    batch_number: str | None = None
+    fish_count: int = Field(gt=0)
+    weight_kg: float = Field(gt=0)
+    storage_temperature: float | None = None
+    expiry_date: date | None = None
+    notes: str | None = None
+
+class ColdStorageUpdate(BaseModel):
+    received_date: date | None = None
+    species: str | None = None
+    product_form: str | None = None
+    source_pond_id: int | None = None
+    source_note: str | None = None
+    batch_number: str | None = None
+    storage_temperature: float | None = None
+    expiry_date: date | None = None
+    notes: str | None = None
+
+class ColdStorageResponse(BaseModel):
+    id: int
+    received_date: date
+    species: str
+    product_form: str
+    source_pond_id: int | None
+    source_note: str | None
+    batch_number: str | None
+    initial_fish_count: int
+    current_fish_count: int
+    initial_weight_kg: float
+    current_weight_kg: float
+    storage_temperature: float | None
+    expiry_date: date | None
+    notes: str | None
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+# ==================== PERSONNEL ====================
+class EmployeeCreate(BaseModel):
+    employee_code:str
+    full_name:str
+    fin_code:str|None=None
+    birth_date:date|None=None
+    gender:str|None=None
+    phone:str|None=None
+    address:str|None=None
+    department:str
+    position:str
+    hire_date:date=Field(default_factory=date.today)
+    termination_date:date|None=None
+    monthly_salary:float=Field(default=0,ge=0)
+    shift:str|None=None
+    status:str="İşləyir"
+    notes:str|None=None
+
+class EmployeeUpdate(BaseModel):
+    employee_code:str|None=None
+    full_name:str|None=None
+    fin_code:str|None=None
+    birth_date:date|None=None
+    gender:str|None=None
+    phone:str|None=None
+    address:str|None=None
+    department:str|None=None
+    position:str|None=None
+    hire_date:date|None=None
+    termination_date:date|None=None
+    monthly_salary:float|None=Field(default=None,ge=0)
+    shift:str|None=None
+    status:str|None=None
+    notes:str|None=None
+
+class EmployeeResponse(EmployeeCreate):
+    id:int
+    photo_path:str|None=None
+    created_at:datetime
+    updated_at:datetime
+    model_config=ConfigDict(from_attributes=True)
+
+class AttendanceCreate(BaseModel):
+    attendance_date:date=Field(default_factory=date.today)
+    status:str
+    check_in:str|None=None
+    check_out:str|None=None
+    worked_hours:float=Field(default=0,ge=0,le=24)
+    notes:str|None=None
+class AttendanceResponse(AttendanceCreate):
+    id:int
+    employee_id:int
+    created_at:datetime
+    model_config=ConfigDict(from_attributes=True)
+
+class SalaryPaymentCreate(BaseModel):
+    payment_date:date=Field(default_factory=date.today)
+    salary_period:str
+    base_salary:float=Field(default=0,ge=0)
+    advance_amount:float=Field(default=0,ge=0)
+    bonus_amount:float=Field(default=0,ge=0)
+    deduction_amount:float=Field(default=0,ge=0)
+    paid_amount:float=Field(default=0,ge=0)
+    notes:str|None=None
+class SalaryPaymentResponse(SalaryPaymentCreate):
+    id:int
+    employee_id:int
+    created_at:datetime
+    model_config=ConfigDict(from_attributes=True)
+
+class EmployeeDocumentResponse(BaseModel):
+    id:int
+    employee_id:int
+    document_type:str
+    document_path:str
+    notes:str|None
+    created_at:datetime
+    model_config=ConfigDict(from_attributes=True)
+
+
+# ==================== FISH SPECIALIST ====================
+class FishSpecialistCreate(BaseModel):
+    record_type: str
+    pond_id: int | None = None
+    record_date: date = Field(default_factory=date.today)
+    title: str = Field(min_length=1, max_length=200)
+    water_temperature: float | None = None
+    oxygen: float | None = Field(default=None, ge=0)
+    fish_condition: str | None = None
+    symptoms: str | None = None
+    diagnosis: str | None = None
+    treatment: str | None = None
+    medication: str | None = None
+    responsible_person: str | None = None
+    due_date: date | None = None
+    status: str = "Açıq"
+    result: str | None = None
+    notes: str | None = None
+
+
+class FishSpecialistUpdate(BaseModel):
+    record_type: str | None = None
+    pond_id: int | None = None
+    record_date: date | None = None
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    water_temperature: float | None = None
+    oxygen: float | None = Field(default=None, ge=0)
+    fish_condition: str | None = None
+    symptoms: str | None = None
+    diagnosis: str | None = None
+    treatment: str | None = None
+    medication: str | None = None
+    responsible_person: str | None = None
+    due_date: date | None = None
+    status: str | None = None
+    result: str | None = None
+    notes: str | None = None
+
+
+class FishSpecialistResponse(FishSpecialistCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
+    model_config = ConfigDict(from_attributes=True)
+
+
+# ==================== TEMPERATURE STATISTICS ====================
+class TemperatureCreate(BaseModel):
+    record_date: date = Field(default_factory=date.today)
+    temperature_c: float = Field(ge=-10, le=50)
+    source: str = "Əl ilə"
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class TemperatureUpdate(BaseModel):
+    record_date: date | None = None
+    temperature_c: float | None = Field(default=None, ge=-10, le=50)
+    source: str | None = None
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class TemperatureResponse(TemperatureCreate):
+    id: int
+    created_at: datetime
+    updated_at: datetime
     model_config = ConfigDict(from_attributes=True)

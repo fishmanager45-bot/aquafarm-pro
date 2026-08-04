@@ -114,6 +114,121 @@ def home():
 
 
 @app.post(
+    "/sectors",
+    response_model=schemas.SectorResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def create_sector(
+    sector: schemas.SectorCreate,
+    db: Session = Depends(get_db),
+):
+    sector_name = sector.name.strip()
+    existing_sector = (
+        db.query(models.Sector)
+        .filter(func.lower(models.Sector.name) == sector_name.lower())
+        .first()
+    )
+    if existing_sector:
+        raise HTTPException(
+            status_code=400,
+            detail="Bu adda sektor artıq mövcuddur",
+        )
+    new_sector = models.Sector(
+        name=sector_name,
+        description=sector.description,
+    )
+    db.add(new_sector)
+    db.commit()
+    db.refresh(new_sector)
+    return new_sector
+
+
+@app.get(
+    "/sectors",
+    response_model=list[schemas.SectorResponse],
+    dependencies=[Depends(get_current_user)],
+)
+def list_sectors(db: Session = Depends(get_db)):
+    return db.query(models.Sector).order_by(models.Sector.name).all()
+
+
+@app.put(
+    "/sectors/{sector_id}",
+    response_model=schemas.SectorResponse,
+    dependencies=[Depends(get_current_user)],
+)
+def update_sector(
+    sector_id: int,
+    sector_data: schemas.SectorUpdate,
+    db: Session = Depends(get_db),
+):
+    sector = (
+        db.query(models.Sector)
+        .filter(models.Sector.id == sector_id)
+        .first()
+    )
+    if not sector:
+        raise HTTPException(status_code=404, detail="Sektor tapılmadı")
+
+    updates = sector_data.model_dump(exclude_unset=True)
+    if "name" in updates and updates["name"] is not None:
+        sector_name = updates["name"].strip()
+        duplicate = (
+            db.query(models.Sector)
+            .filter(
+                func.lower(models.Sector.name) == sector_name.lower(),
+                models.Sector.id != sector_id,
+            )
+            .first()
+        )
+        if duplicate:
+            raise HTTPException(
+                status_code=400,
+                detail="Bu adda sektor artıq mövcuddur",
+            )
+        updates["name"] = sector_name
+
+    for field, value in updates.items():
+        setattr(sector, field, value)
+    db.commit()
+    db.refresh(sector)
+    return sector
+
+
+@app.delete(
+    "/sectors/{sector_id}",
+    dependencies=[Depends(get_current_user)],
+)
+def delete_sector(
+    sector_id: int,
+    db: Session = Depends(get_db),
+):
+    sector = (
+        db.query(models.Sector)
+        .filter(models.Sector.id == sector_id)
+        .first()
+    )
+    if not sector:
+        raise HTTPException(status_code=404, detail="Sektor tapılmadı")
+    pond_count = (
+        db.query(models.Pond)
+        .filter(models.Pond.sector_id == sector_id)
+        .count()
+    )
+    if pond_count > 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Bu sektorda {pond_count} hovuz var. "
+                "Silməzdən əvvəl hovuzları başqa sektora keçirin."
+            ),
+        )
+    db.delete(sector)
+    db.commit()
+    return {"message": "Sektor uğurla silindi"}
+
+
+@app.post(
     "/ponds",
     response_model=schemas.PondResponse,
     dependencies=[Depends(get_current_user)],
@@ -1558,3 +1673,87 @@ def delete_employee_document(document_id:int,db:Session=Depends(get_db)):
     obj=db.query(models.EmployeeDocument).filter(models.EmployeeDocument.id==document_id).first()
     if obj is None:raise HTTPException(status_code=404,detail="Sənəd tapılmadı")
     (UPLOAD_ROOT/"employees"/Path(obj.document_path).name).unlink(missing_ok=True);db.delete(obj);db.commit();return {"message":"Sənəd silindi"}
+
+
+# ==================== FISH SPECIALIST ====================
+@app.get("/fish-specialist/records", response_model=list[schemas.FishSpecialistResponse], dependencies=[Depends(get_current_user)])
+def list_fish_specialist_records(record_type: str | None = None, pond_id: int | None = None, db: Session = Depends(get_db)):
+    query = db.query(models.FishSpecialistRecord)
+    if record_type:
+        query = query.filter(models.FishSpecialistRecord.record_type == record_type)
+    if pond_id is not None:
+        query = query.filter(models.FishSpecialistRecord.pond_id == pond_id)
+    return query.order_by(models.FishSpecialistRecord.record_date.desc(), models.FishSpecialistRecord.id.desc()).all()
+
+
+@app.post("/fish-specialist/records", response_model=schemas.FishSpecialistResponse, dependencies=[Depends(get_current_user)])
+def create_fish_specialist_record(payload: schemas.FishSpecialistCreate, db: Session = Depends(get_db)):
+    if payload.pond_id is not None and not db.query(models.Pond).filter(models.Pond.id == payload.pond_id).first():
+        raise HTTPException(status_code=404, detail="Hovuz, nohur və ya qəfəs tapılmadı")
+    obj = models.FishSpecialistRecord(**payload.model_dump())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@app.put("/fish-specialist/records/{record_id}", response_model=schemas.FishSpecialistResponse, dependencies=[Depends(get_current_user)])
+def update_fish_specialist_record(record_id: int, payload: schemas.FishSpecialistUpdate, db: Session = Depends(get_db)):
+    obj = db.query(models.FishSpecialistRecord).filter(models.FishSpecialistRecord.id == record_id).first()
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Balıqşünas qeydi tapılmadı")
+    data = payload.model_dump(exclude_unset=True)
+    if data.get("pond_id") is not None and not db.query(models.Pond).filter(models.Pond.id == data["pond_id"]).first():
+        raise HTTPException(status_code=404, detail="Hovuz, nohur və ya qəfəs tapılmadı")
+    for key, value in data.items():
+        setattr(obj, key, value)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@app.delete("/fish-specialist/records/{record_id}", dependencies=[Depends(get_current_user)])
+def delete_fish_specialist_record(record_id: int, db: Session = Depends(get_db)):
+    obj = db.query(models.FishSpecialistRecord).filter(models.FishSpecialistRecord.id == record_id).first()
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Balıqşünas qeydi tapılmadı")
+    db.delete(obj)
+    db.commit()
+    return {"message": "Balıqşünas qeydi silindi"}
+
+
+# ==================== TEMPERATURE STATISTICS ====================
+@app.get("/temperature-records", response_model=list[schemas.TemperatureResponse], dependencies=[Depends(get_current_user)])
+def list_temperature_records(db: Session = Depends(get_db)):
+    return db.query(models.TemperatureRecord).order_by(models.TemperatureRecord.record_date.desc(), models.TemperatureRecord.id.desc()).all()
+
+
+@app.post("/temperature-records", response_model=schemas.TemperatureResponse, dependencies=[Depends(get_current_user)])
+def create_temperature_record(payload: schemas.TemperatureCreate, db: Session = Depends(get_db)):
+    obj = models.TemperatureRecord(**payload.model_dump())
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@app.put("/temperature-records/{record_id}", response_model=schemas.TemperatureResponse, dependencies=[Depends(get_current_user)])
+def update_temperature_record(record_id: int, payload: schemas.TemperatureUpdate, db: Session = Depends(get_db)):
+    obj = db.query(models.TemperatureRecord).filter(models.TemperatureRecord.id == record_id).first()
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Temperatur qeydi tapılmadı")
+    for key, value in payload.model_dump(exclude_unset=True).items():
+        setattr(obj, key, value)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+@app.delete("/temperature-records/{record_id}", dependencies=[Depends(get_current_user)])
+def delete_temperature_record(record_id: int, db: Session = Depends(get_db)):
+    obj = db.query(models.TemperatureRecord).filter(models.TemperatureRecord.id == record_id).first()
+    if obj is None:
+        raise HTTPException(status_code=404, detail="Temperatur qeydi tapılmadı")
+    db.delete(obj)
+    db.commit()
+    return {"message": "Temperatur qeydi silindi"}

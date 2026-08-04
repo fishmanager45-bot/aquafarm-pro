@@ -4,6 +4,8 @@ import DrugWarehouse from "./DrugWarehouse";
 import Sales from "./Sales";
 import ColdStorage from "./ColdStorage";
 import Personnel from "./Personnel";
+import FishSpecialist from "./FishSpecialist";
+import TemperatureStatistics from "./TemperatureStatistics";
 
 // AquaFarm Pro ölüm modulu: növ, doğum ili, avtomatik yaş və cins.
 
@@ -19,6 +21,7 @@ const getToday = () => {
 
 const emptyPond = () => ({
   name: "",
+  sector_id: "",
   unit_type: "Hovuz",
   area_m2: "",
   species: "",
@@ -81,9 +84,16 @@ function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [ponds, setPonds] = useState([]);
+  const [sectors, setSectors] = useState([]);
+  const [selectedSectorId, setSelectedSectorId] = useState(null);
+  const [showSectorForm, setShowSectorForm] = useState(false);
+  const [sectorName, setSectorName] = useState("");
+  const [sectorDescription, setSectorDescription] = useState("");
+  const [savingSector, setSavingSector] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [activeView, setActiveView] = useState("Hamısı");
+  const [warehouseMenuOpen, setWarehouseMenuOpen] = useState(false);
   const [employees, setEmployees] = useState([]);
 
   const [showPondForm, setShowPondForm] = useState(false);
@@ -159,6 +169,22 @@ function App() {
     setGrowthCalculations([]);
     setFeedProducts([]);
     setFeedTransactions([]);
+  };
+
+  const loadSectors = async (accessToken = token) => {
+    try {
+      const response = await fetch(`${API_URL}/sectors`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (response.status === 401 || response.status === 403) {
+        logout();
+        return;
+      }
+      if (!response.ok) throw new Error("Sektor məlumatları alınmadı");
+      setSectors(await response.json());
+    } catch (err) {
+      setError(err.message);
+    }
   };
 
   const loadPonds = async (accessToken = token) => {
@@ -269,6 +295,7 @@ function App() {
 
   useEffect(() => {
     if (token) {
+      loadSectors(token);
       loadPonds(token);
       loadEmployees();
     }
@@ -316,9 +343,58 @@ function App() {
     }
   };
 
+  const saveSector = async (event) => {
+    event.preventDefault();
+    if (!sectorName.trim()) {
+      setError("Sektorun adını daxil edin");
+      return;
+    }
+    setSavingSector(true);
+    setError("");
+    try {
+      const response = await authorizedFetch(`${API_URL}/sectors`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: sectorName.trim(),
+          description: sectorDescription.trim() || null,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Sektor yadda saxlanmadı");
+      }
+      await loadSectors();
+      setSectorName("");
+      setSectorDescription("");
+      setShowSectorForm(false);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setSavingSector(false);
+    }
+  };
+
+  const deleteSector = async (sectorId) => {
+    if (!window.confirm("Bu sektor silinsin?")) return;
+    try {
+      const response = await authorizedFetch(`${API_URL}/sectors/${sectorId}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        const data = await response.json();
+        throw new Error(data.detail || "Sektor silinmədi");
+      }
+      if (selectedSectorId === sectorId) setSelectedSectorId(null);
+      await loadSectors();
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
   const openNewPond = () => {
     setEditingPondId(null);
-    setNewPond(emptyPond());
+    setNewPond({ ...emptyPond(), sector_id: selectedSectorId || "" });
     setError("");
     setShowPondForm(true);
   };
@@ -327,6 +403,7 @@ function App() {
     setEditingPondId(pond.id);
     setNewPond({
       name: pond.name || "",
+      sector_id: pond.sector_id ?? "",
       unit_type: pond.unit_type || "Hovuz",
       area_m2: pond.area_m2 ?? "",
       species: pond.species || "",
@@ -351,6 +428,7 @@ function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             name: newPond.name,
+            sector_id: newPond.sector_id ? Number(newPond.sector_id) : null,
             unit_type: newPond.unit_type,
             area_m2: Number(newPond.area_m2 || 0),
             species: newPond.species || null,
@@ -731,10 +809,50 @@ function App() {
   const savePolarization = async (event) => { event.preventDefault(); if (!selectedBroodstockId) return; const response = await authorizedFetch(`${API_URL}/broodstock/${selectedBroodstockId}/polarizations`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...polarizationForm, average_value: Number(polarizationForm.average_value), minimum_value: polarizationForm.minimum_value ? Number(polarizationForm.minimum_value) : null, maximum_value: polarizationForm.maximum_value ? Number(polarizationForm.maximum_value) : null, egg_count: polarizationForm.egg_count ? Number(polarizationForm.egg_count) : null }) }); if (response.ok) { setPolarizationForm(emptyPolarization()); await loadBroodstockDetails(selectedBroodstockId); } else { const data = await response.json(); setError(data.detail || "Polarizasiya qeydi saxlanmadı"); } };
   const deletePolarization = async (id) => { await authorizedFetch(`${API_URL}/broodstock/polarizations/${id}`, { method: "DELETE" }); await loadBroodstockDetails(selectedBroodstockId); };
 
-  const filteredPonds =
+  const unitFilteredPonds =
     activeView === "Hamısı" || activeView === "Ölüm" || activeView === "Artım"
       ? ponds
       : ponds.filter((pond) => (pond.unit_type || "Hovuz") === activeView);
+
+  const filteredPonds =
+    activeView === "Hovuz" && selectedSectorId !== null
+      ? unitFilteredPonds.filter((pond) =>
+          selectedSectorId === "unassigned"
+            ? !pond.sector_id
+            : Number(pond.sector_id) === Number(selectedSectorId)
+        )
+      : unitFilteredPonds;
+
+  const pondSectors = sectors.map((sector) => {
+    const sectorPonds = ponds.filter(
+      (pond) =>
+        (pond.unit_type || "Hovuz") === "Hovuz" &&
+        Number(pond.sector_id) === Number(sector.id)
+    );
+    const fishCount = sectorPonds.reduce(
+      (sum, pond) => sum + Number(pond.fish_count || 0), 0
+    );
+    const biomassKg = sectorPonds.reduce(
+      (sum, pond) =>
+        sum +
+        (Number(pond.fish_count || 0) *
+          Number(pond.average_weight_g || 0)) /
+          1000,
+      0
+    );
+    return { ...sector, pondCount: sectorPonds.length, fishCount, biomassKg };
+  });
+
+  const unassignedPondCount = ponds.filter(
+    (pond) => (pond.unit_type || "Hovuz") === "Hovuz" && !pond.sector_id
+  ).length;
+
+  const selectedSector =
+    selectedSectorId === "unassigned"
+      ? { id: "unassigned", name: "Sektorsuz hovuzlar" }
+      : sectors.find(
+          (sector) => Number(sector.id) === Number(selectedSectorId)
+        );
 
   const totalFish = filteredPonds.reduce(
     (sum, pond) => sum + Number(pond.fish_count || 0),
@@ -905,15 +1023,27 @@ function App() {
         </div>
         <nav>
           <button className={activeView === "Hamısı" ? "active" : ""} onClick={() => setActiveView("Hamısı")}>📊 İdarəetmə paneli</button>
-          <button className={activeView === "Hovuz" ? "active" : ""} onClick={() => setActiveView("Hovuz")}>🌊 Hovuzlar</button>
+          <button className={activeView === "Hovuz" ? "active" : ""} onClick={() => { setActiveView("Hovuz"); setSelectedSectorId(null); }}>🌊 Hovuzlar</button>
           <button className={activeView === "Nohur" ? "active" : ""} onClick={() => setActiveView("Nohur")}>🏞️ Nohurlar</button>
           <button className={activeView === "Qəfəs" ? "active" : ""} onClick={() => setActiveView("Qəfəs")}>🧺 Qəfəslər</button>
+          <button className={activeView === "Balıqşünas" ? "active" : ""} onClick={() => setActiveView("Balıqşünas")}>🩺 Balıqşünas</button>
+          <button className={activeView === "Temperatur" ? "active" : ""} onClick={() => setActiveView("Temperatur")}>🌡️ Temperatur</button>
           <button>🐟 Balıq partiyaları</button>
           <button>🤲 Yemləmə</button>
-          <button className={activeView === "Yem anbarı" ? "active" : ""} onClick={() => setActiveView("Yem anbarı")}>📦 Yem anbarı</button>
-          <button className={activeView === "Dərman anbarı" ? "active" : ""} onClick={() => setActiveView("Dərman anbarı")}>💊 Dərman anbarı</button>
+          <button
+            className={["Yem anbarı", "Dərman anbarı", "Soyuducu anbarı"].includes(activeView) ? "active" : ""}
+            onClick={() => setWarehouseMenuOpen((open) => !open)}
+          >
+            🏬 Anbarlar {warehouseMenuOpen ? "▾" : "▸"}
+          </button>
+          {warehouseMenuOpen && (
+            <div style={{ display: "grid", gap: "4px", paddingLeft: "14px" }}>
+              <button className={activeView === "Yem anbarı" ? "active" : ""} onClick={() => setActiveView("Yem anbarı")} style={{ fontSize: "14px" }}>📦 Yem anbarı</button>
+              <button className={activeView === "Dərman anbarı" ? "active" : ""} onClick={() => setActiveView("Dərman anbarı")} style={{ fontSize: "14px" }}>💊 Dərman anbarı</button>
+              <button className={activeView === "Soyuducu anbarı" ? "active" : ""} onClick={() => setActiveView("Soyuducu anbarı")} style={{ fontSize: "14px" }}>❄️ Soyuducu anbarı</button>
+            </div>
+          )}
           <button className={activeView === "Satış" ? "active" : ""} onClick={() => setActiveView("Satış")}>🧾 Satış</button>
-          <button className={activeView === "Soyuducu anbarı" ? "active" : ""} onClick={() => setActiveView("Soyuducu anbarı")}>❄️ Soyuducu anbarı</button>
           <button className={activeView === "İşçi personalı" ? "active" : ""} onClick={() => setActiveView("İşçi personalı")}>👥 İşçi personalı</button>
           <button className={activeView === "Damazlıq balıqlar" ? "active" : ""} onClick={() => setActiveView("Damazlıq balıqlar")}>🐟 Damazlıq balıqlar</button>
           <button className={activeView === "Artım" ? "active" : ""} onClick={() => setActiveView("Artım")}>📈 Artım</button>
@@ -927,10 +1057,10 @@ function App() {
       <main className="main">
         <header>
           <div>
-            <h1>{activeView === "Ölüm" ? "Ölüm qeydiyyatı" : activeView === "Artım" ? "Balıqların artımı" : activeView === "Yem anbarı" ? "Yem anbarı" : activeView === "Dərman anbarı" ? "Dərman anbarı" : activeView === "Satış" ? "Satış" : activeView === "Soyuducu anbarı" ? "Soyuducu anbarı" : activeView === "İşçi personalı" ? "İşçi personalı" : activeView === "Damazlıq balıqlar" ? "Damazlıq balıqlar" : "İdarəetmə paneli"}</h1>
-            <p>{activeView === "Ölüm" ? "Gündəlik ölüm qeydləri və ümumi hesabat" : activeView === "Artım" ? "Çəki, biokütlə, SGR və FCR göstəriciləri" : activeView === "Yem anbarı" ? "Yem ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Dərman anbarı" ? "Dərman ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Satış" ? "Balıq satışı, ödəniş və qaimə nəzarəti" : activeView === "Soyuducu anbarı" ? "Soyuducu məhsullarının qəbulu və qalığı" : activeView === "İşçi personalı" ? "İşçilər, davamiyyət, maaş və sənədlər" : "Təsərrüfatın real vaxt üzrə ümumi vəziyyəti"}</p>
+            <h1>{activeView === "Temperatur" ? "Temperatur statistikası" : activeView === "Balıqşünas" ? "Balıqşünas nəzarəti" : activeView === "Ölüm" ? "Ölüm qeydiyyatı" : activeView === "Artım" ? "Balıqların artımı" : activeView === "Yem anbarı" ? "Yem anbarı" : activeView === "Dərman anbarı" ? "Dərman anbarı" : activeView === "Satış" ? "Satış" : activeView === "Soyuducu anbarı" ? "Soyuducu anbarı" : activeView === "İşçi personalı" ? "İşçi personalı" : activeView === "Damazlıq balıqlar" ? "Damazlıq balıqlar" : "İdarəetmə paneli"}</h1>
+            <p>{activeView === "Temperatur" ? "Gündəlik, aylıq və illik su temperaturu" : activeView === "Balıqşünas" ? "Hovuz, nohur və qəfəslərin gündəlik nəzarəti" : activeView === "Ölüm" ? "Gündəlik ölüm qeydləri və ümumi hesabat" : activeView === "Artım" ? "Çəki, biokütlə, SGR və FCR göstəriciləri" : activeView === "Yem anbarı" ? "Yem ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Dərman anbarı" ? "Dərman ehtiyatı, giriş-çıxış və son istifadə nəzarəti" : activeView === "Satış" ? "Balıq satışı, ödəniş və qaimə nəzarəti" : activeView === "Soyuducu anbarı" ? "Soyuducu məhsullarının qəbulu və qalığı" : activeView === "İşçi personalı" ? "İşçilər, davamiyyət, maaş və sənədlər" : "Təsərrüfatın real vaxt üzrə ümumi vəziyyəti"}</p>
           </div>
-          {activeView !== "Ölüm" && activeView !== "Artım" && activeView !== "Yem anbarı" && activeView !== "Dərman anbarı" && activeView !== "Satış" && activeView !== "Soyuducu anbarı" && activeView !== "İşçi personalı" && activeView !== "Damazlıq balıqlar" && <button className="add-button" onClick={openNewPond}>+ Yeni vahid</button>}
+          {activeView !== "Temperatur" && activeView !== "Balıqşünas" && activeView !== "Ölüm" && activeView !== "Artım" && activeView !== "Yem anbarı" && activeView !== "Dərman anbarı" && activeView !== "Satış" && activeView !== "Soyuducu anbarı" && activeView !== "İşçi personalı" && activeView !== "Damazlıq balıqlar" && <button className="add-button" onClick={openNewPond}>+ Yeni vahid</button>}
         </header>
 
         {error && <div className="dashboard-error">{error}</div>}
@@ -957,7 +1087,48 @@ function App() {
           </section>
         )}
 
-        {activeView === "Ölüm" ? (
+        {activeView === "Temperatur" ? (
+          <TemperatureStatistics API_URL={API_URL} token={token} />
+        ) : activeView === "Balıqşünas" ? (
+          <FishSpecialist API_URL={API_URL} token={token} ponds={ponds} />
+        ) : activeView === "Hovuz" && selectedSectorId === null ? (
+          <>
+            <section className="table-section" style={{ marginBottom: "20px" }}>
+              <div className="section-title">
+                <div><h2>Hovuz sektorları</h2><p>Sektoru seçərək həmin ərazidəki hovuzlara baxın</p></div>
+                <button className="add-button" onClick={() => setShowSectorForm(!showSectorForm)}>+ Yeni sektor</button>
+              </div>
+              {showSectorForm && (
+                <form onSubmit={saveSector} style={{ padding: "20px 24px", display: "grid", gridTemplateColumns: "1fr 2fr auto", gap: "12px", alignItems: "end", borderTop: "1px solid #e2e8f0" }}>
+                  <div className="form-field"><label>Sektorun adı *</label><input value={sectorName} onChange={(e) => setSectorName(e.target.value)} placeholder="Məsələn: Sektor 1" required /></div>
+                  <div className="form-field"><label>Açıqlama</label><input value={sectorDescription} onChange={(e) => setSectorDescription(e.target.value)} placeholder="Məsələn: İnkubasiya sexinin yanı" /></div>
+                  <button type="submit" className="save-button" disabled={savingSector}>{savingSector ? "Saxlanılır..." : "Sektoru yarat"}</button>
+                </form>
+              )}
+            </section>
+            <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: "18px" }}>
+              {pondSectors.map((sector) => (
+                <article key={sector.id} onClick={() => setSelectedSectorId(sector.id)} style={{ padding: "22px", background: "#fff", border: "1px solid #dbe5ec", borderRadius: "16px", boxShadow: "0 5px 18px rgba(15,44,64,.07)", cursor: "pointer" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "12px", alignItems: "start" }}>
+                    <div><div style={{ fontSize: "32px" }}>🌊</div><h2 style={{ margin: "10px 0 4px" }}>{sector.name}</h2><p style={{ color: "#64748b" }}>{sector.description || "Sektor açıqlaması yoxdur"}</p></div>
+                    <button type="button" className="delete-button" onClick={(event) => { event.stopPropagation(); deleteSector(sector.id); }}>Sil</button>
+                  </div>
+                  <div style={{ marginTop: "20px", paddingTop: "16px", borderTop: "1px solid #e2e8f0", display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "10px" }}>
+                    <div><small style={{ color: "#64748b" }}>Hovuz</small><strong style={{ display: "block", fontSize: "20px" }}>{sector.pondCount}</strong></div>
+                    <div><small style={{ color: "#64748b" }}>Balıq</small><strong style={{ display: "block", fontSize: "20px" }}>{sector.fishCount.toLocaleString("az-AZ")}</strong></div>
+                    <div><small style={{ color: "#64748b" }}>Biokütlə</small><strong style={{ display: "block", fontSize: "20px" }}>{sector.biomassKg.toFixed(1)} kq</strong></div>
+                  </div>
+                </article>
+              ))}
+              {unassignedPondCount > 0 && (
+                <article onClick={() => setSelectedSectorId("unassigned")} style={{ padding: "22px", background: "#fff7ed", border: "1px dashed #fb923c", borderRadius: "16px", cursor: "pointer" }}>
+                  <div style={{ fontSize: "32px" }}>📂</div><h2 style={{ margin: "10px 0 4px" }}>Sektorsuz hovuzlar</h2><p style={{ color: "#9a3412" }}>Bu hovuzlara sektor təyin edilməyib</p><strong style={{ display: "block", marginTop: "18px", fontSize: "22px" }}>{unassignedPondCount} hovuz</strong>
+                </article>
+              )}
+              {pondSectors.length === 0 && unassignedPondCount === 0 && <div className="empty-row">Hələ sektor yaradılmayıb</div>}
+            </section>
+          </>
+        ) : activeView === "Ölüm" ? (
           <>
             <section className="table-section mortality-form-section">
               <div className="section-title">
@@ -1410,7 +1581,111 @@ function App() {
               <table>
                 <thead><tr><th>Marka</th><th>Məhsul</th><th>Növ</th><th>Ölçü</th><th>Partiya</th><th>Təchizatçı</th><th>Son istifadə</th><th>Qalıq</th><th>Minimum</th><th>Qiymət</th><th>Dəyər</th><th>Status</th><th>Əməliyyat</th></tr></thead>
                 <tbody>
-                  {filteredFeedProducts.map((product) => { const low = Number(product.current_stock_kg) <= Number(product.minimum_stock_kg); const expired = product.expiry_date && new Date(`${product.expiry_date}T00:00:00`) <= new Date(); return <tr key={product.id}><td><strong>{product.brand}</strong></td><td>{product.product_name}</td><td>{product.species || "—"}</td><td>{product.pellet_size_mm != null ? `${product.pellet_size_mm} mm` : "—"}</td><td>{product.batch_number || "—"}</td><td>{product.supplier || "—"}</td><td>{product.expiry_date || "—"}</td><td><strong>{Number(product.current_stock_kg).toFixed(2)} kq</strong></td><td>{Number(product.minimum_stock_kg).toFixed(2)} kq</td><td>{Number(product.unit_price).toFixed(2)} AZN</td><td>{(Number(product.current_stock_kg) * Number(product.unit_price)).toFixed(2)} AZN</td><td><span className="status">{expired ? "Vaxtı bitib" : low ? "Az qalıb" : "Normal"}</span></td><td><div className="action-buttons"><button className="edit-button" onClick={() => editFeedProduct(product)}>Redaktə et</button><button className="delete-button" onClick={() => deleteFeedProduct(product.id)}>Sil</button></div></td></tr>; })}
+                  {filteredFeedProducts.map((product) => {
+  const low =
+    Number(product.current_stock_kg) <=
+    Number(product.minimum_stock_kg);
+
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+
+  const expiryDate = product.expiry_date
+    ? new Date(`${product.expiry_date}T00:00:00`)
+    : null;
+
+  const daysLeft = expiryDate
+    ? Math.ceil((expiryDate - today) / 86400000)
+    : null;
+
+  const expired = daysLeft !== null && daysLeft < 0;
+  const expiringSoon =
+    daysLeft !== null && daysLeft >= 0 && daysLeft <= 30;
+
+  let statusText = "Normal";
+  let statusColor = "#15803d";
+  let statusBackground = "#dcfce7";
+
+  if (expired) {
+    statusText = "❌ Müddəti bitib";
+    statusColor = "#b91c1c";
+    statusBackground = "#fee2e2";
+  } else if (expiringSoon) {
+    statusText =
+      daysLeft === 0
+        ? "⚠️ Bu gün bitir"
+        : `⚠️ ${daysLeft} gün qalıb`;
+    statusColor = "#b45309";
+    statusBackground = "#fef3c7";
+  } else if (low) {
+    statusText = "⚠️ Stok azdır";
+    statusColor = "#b45309";
+    statusBackground = "#fef3c7";
+  }
+
+  return (
+    <tr
+      key={product.id}
+      style={{
+        backgroundColor: expired
+          ? "#fff1f2"
+          : expiringSoon
+            ? "#fffbeb"
+            : undefined,
+      }}
+    >
+      <td><strong>{product.brand}</strong></td>
+      <td>{product.product_name}</td>
+      <td>{product.species || "—"}</td>
+      <td>
+        {product.pellet_size_mm != null
+          ? `${product.pellet_size_mm} mm`
+          : "—"}
+      </td>
+      <td>{product.batch_number || "—"}</td>
+      <td>{product.supplier || "—"}</td>
+      <td>{product.expiry_date || "—"}</td>
+      <td>
+        <strong>
+          {Number(product.current_stock_kg).toFixed(2)} kq
+        </strong>
+      </td>
+      <td>{Number(product.minimum_stock_kg).toFixed(2)} kq</td>
+      <td>{Number(product.unit_price).toFixed(2)} AZN</td>
+      <td>
+        {(Number(product.current_stock_kg) *
+          Number(product.unit_price)).toFixed(2)} AZN
+      </td>
+      <td>
+        <span
+          className="status"
+          style={{
+            color: statusColor,
+            backgroundColor: statusBackground,
+          }}
+        >
+          {statusText}
+        </span>
+      </td>
+      <td>
+        <div className="action-buttons">
+          <button
+            className="edit-button"
+            onClick={() => editFeedProduct(product)}
+          >
+            Redaktə et
+          </button>
+
+          <button
+            className="delete-button"
+            onClick={() => deleteFeedProduct(product.id)}
+          >
+            Sil
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+})}
                   {filteredFeedProducts.length === 0 && <tr><td colSpan="13" className="empty-row">Yem məhsulu yoxdur</td></tr>}
                 </tbody>
               </table>
@@ -1483,6 +1758,19 @@ function App() {
           </>
         ) : (
           <>
+            {activeView === "Hamısı" && <TemperatureStatistics API_URL={API_URL} token={token} compact />}
+            {activeView === "Hovuz" && selectedSectorId !== null && (
+              <section className="table-section" style={{ marginBottom: "20px" }}>
+                <div className="section-title">
+                  <div>
+                    <button type="button" className="cancel-button" onClick={() => setSelectedSectorId(null)} style={{ marginBottom: "12px" }}>← Sektor siyahısına qayıt</button>
+                    <h2>{selectedSector?.name || "Sektor"}</h2>
+                    <p>Bu sektorda {filteredPonds.length} hovuz var</p>
+                  </div>
+                  <button type="button" className="add-button" onClick={openNewPond}>+ Bu sektora hovuz əlavə et</button>
+                </div>
+              </section>
+            )}
             <section className="cards">
               <div className="card"><span className="icon blue">🌊</span><div><p>Ümumi vahid</p><h2>{filteredPonds.length}</h2></div></div>
               <div className="card"><span className="icon green">🐟</span><div><p>Balıq sayı</p><h2>{totalFish.toLocaleString("az-AZ")}</h2></div></div>
@@ -1516,6 +1804,7 @@ function App() {
               <div className="form-header"><div><h2>{editingPondId ? "Vahidi redaktə et" : "Yeni vahid əlavə et"}</h2><p>Saxlama vahidinin ilkin məlumatlarını daxil edin</p></div><button type="button" className="close-button" onClick={() => setShowPondForm(false)}>×</button></div>
               <div className="form-grid">
                 <div className="form-field"><label>Saxlama tipi *</label><select value={newPond.unit_type} onChange={(e) => setNewPond({ ...newPond, unit_type: e.target.value })} required><option value="Hovuz">Hovuz</option><option value="Nohur">Nohur</option><option value="Qəfəs">Qəfəs</option></select></div>
+                <div className="form-field"><label>Sektor</label><select value={newPond.sector_id} onChange={(e) => setNewPond({ ...newPond, sector_id: e.target.value })}><option value="">Sektor seçilməyib</option>{sectors.map((sector) => <option key={sector.id} value={sector.id}>{sector.name}</option>)}</select></div>
                 <div className="form-field"><label>Vahidin adı *</label><input value={newPond.name} onChange={(e) => setNewPond({ ...newPond, name: e.target.value })} placeholder="Məsələn: Hovuz 2" required /></div>
                 <div className="form-field"><label>Balıq növü</label><input value={newPond.species} onChange={(e) => setNewPond({ ...newPond, species: e.target.value })} placeholder="Məsələn: Rus nərəsi" /></div>
                 <div className="form-field"><label>Sahə (m²) *</label><input type="number" min="0" step="0.01" value={newPond.area_m2} onChange={(e) => setNewPond({ ...newPond, area_m2: e.target.value })} required /></div>
